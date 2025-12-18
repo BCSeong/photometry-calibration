@@ -796,14 +796,12 @@ class SimpleCalibrationMatplotlib:
         self.light_matrix = self.light_directions.T
         print(f"Light matrix shape: {self.light_matrix.shape}")
 
-    def save_json_result(self, filename: str = "calibration_result.json"):
+    def save_json_result(self, filename: str = "calibration_result.json", LightCalibrationResult: lvcalc.LightCalibrationResult = None):
         """JSON 형식으로 결과 저장 (light_vec_calculator 사용)"""
-        if self.light_matrix is None:
-            raise ValueError("Light matrix not built")
-        
-        light_dir_array = np.array(self.light_directions)
-        return lvcalc.save_calibration_json(light_dir_array, self.light_matrix, filename, 
-                                           errors=self.errors, version="0.0.0-1")
+        if LightCalibrationResult is None:
+            raise ValueError("LightCalibrationResult not set")
+
+        return lvcalc.save_calibration_json(LightCalibrationResult, output_filename=filename)
 
 
 def main_single_sphere():
@@ -856,6 +854,21 @@ def main_single_sphere():
             print("Continuing without rectification...")
             apply_rectification = False
     
+    # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    # KYCAL pipeline
+
+    # 0) 이미지 로드
+    # 1) 각 이미지에서 구슬 중심과 하이라이트 영역 선택 (highlight 영역 수집만)
+    # 2) highlight_position을 (number of lights, 1, 2) 형태로 변환
+    # 3) compute light vectors from highlight positions
+    #   -> 구슬 하나 마다 분할조명 개수 길이의 light vector 계산
+    # 4) average light vectors 
+    #   -> 여러 구슬에 대해 (3) 을 진행하여 light vectore 의 평균과 오차를 계산 (오차가 0.1(예시) 이상이면 bad 출력)
+    # 5) convert uvw coordinate to XYZ coordinate
+    # 6) convert XYZ to XYZ_backward
+    # 7) convert each light's XYZ and XYZ_backward to spherical coordinates
+    # 8) save json and debug results
+
     # 이미지 로드 및 rectification 적용
     try:
         image_paths = calib.load_images(image_pattern, apply_rectification=apply_rectification)
@@ -891,7 +904,7 @@ def main_single_sphere():
             continue
         print(f"[DEBUG] ===== MAIN LOOP: Finished processing image {i+1} =====\n")
 
-    # step 2: highlight_position을 (number of lights, 1, 2) 형태로 변환
+    # highlight_position을 (number of lights, 1, 2) 형태로 변환
     if len(calib.sphere_centers) == 0 or len(calib.highlight_regions) == 0:
         print("Error: No sphere centers or highlight regions collected.")
         return
@@ -920,25 +933,61 @@ def main_single_sphere():
     print(f"Number of lights: {len(highlight_position)}")
     print(f"Sphere radius (px): {sphere_radius_px}")
     
-    # step 3: compute light vectors from highlight positions
+    # step 2: compute light vectors from highlight positions
     light_dir = lvcalc.compute_light_vector_from_highlight_position(highlight_position, sphere_radius_px)  # (num_lights, 1, uvw)
-    print(f"Light direction shape (before averaging): {light_dir.shape}")
+    print(f"Light direction shape (before averaging): {light_dir.shape}") # (num_lights, number of spheres, uvw)
+
+    # step 3: calculate error btw multiple spheres, for single sphere skip this step
+    error = lvcalc.compute_error(light_dir)  # (num_lights, number of spheres, XYZ)
+    good_bad = lvcalc.compute_good_bad(error)  # boolean (True if good, False if bad)
+    if not good_bad:
+        print("Error: Bad light vectors")
+        return
     
     # step 4: average light vectors (single sphere이므로)
-    light_dir_avg = lvcalc.average_light_vector(light_dir)  # (num_lights, uvw)
+    light_dir_avg = lvcalc.average_light_vector(light_dir)  # return result is (num_lights, uvw)
     print(f"Light direction shape (after averaging): {light_dir_avg.shape}")
     
     # step 5: convert uvw coordinate to XYZ coordinate
     light_dir_XYZ = lvcalc.convert_image_coordinate_to_XYZ_coordinate(light_dir_avg)  # (num_lights, XYZ)
     light_matrix_XYZ = light_dir_XYZ.T  # (3, num_lights)
+
+    # step 6: convert XYZ to XYZ_backward
+    light_dir_XYZ_backward = lvcalc.convert_XYZ_to_XYZ_backward(light_dir_XYZ)  # (num_lights, XYZ)
+    light_matrix_XYZ_backward = light_dir_XYZ_backward.T  # (3, num_lights)
     
-    # 결과 저장
-    calib.light_directions = light_dir_XYZ
-    calib.light_matrix = light_matrix_XYZ
-    calib.errors = 'single_sphere'
+    # step 7: convert XYZ to spherical coordinate
+    light_dir_spherical_list = lvcalc.convert_XYZ_to_spherical_coordinate(light_dir_XYZ)
+    light_dir_spherical_list_backward = lvcalc.convert_XYZ_to_spherical_coordinate(light_dir_XYZ_backward)
+
     
-    print(f"Light directions (XYZ): {calib.light_directions}")
-    print(f"Light matrix shape: {calib.light_matrix.shape}")
+    # light_dir_spherical_coord를 dict 형태로 변환 (L1, L2, ... 형식)
+    light_dir_spherical_coord = {}
+    light_dir_spherical_coord_backward = {}
+    for i, spherical_info in enumerate(light_dir_spherical_list):
+        light_name = f'L{i+1}'
+        light_dir_spherical_coord[light_name] = spherical_info
+    for i, spherical_info_backward in enumerate(light_dir_spherical_list_backward):
+        light_name = f'L{i+1}'
+        light_dir_spherical_coord_backward[light_name] = spherical_info_backward
+    
+    # step 8: save json and debug results
+    backward = {
+        'light_dir': light_dir_XYZ_backward,
+        'light_matrix': light_matrix_XYZ_backward,
+        'light_dir_spherical_coord': light_dir_spherical_list_backward
+    }
+    light_calibration_result = lvcalc.LightCalibrationResult(
+        light_dir=light_dir_XYZ,
+        light_matrix=light_matrix_XYZ,
+        errors=error,
+        light_dir_spherical_coord=light_dir_spherical_coord,
+        backward=backward,
+        version="0.0.0-1"
+    )
+    
+    print(f"Light directions (XYZ): {light_dir_XYZ}")
+    print(f"Light directions (spherical): {light_dir_spherical_coord}")
     
     # 결과 저장
     import datetime
@@ -953,14 +1002,16 @@ def main_single_sphere():
     debug_extraction_name = save_path + '/debug_extraction.png'
     if not os.path.exists(save_path):
         os.makedirs(save_path)
-    calib.save_json_result(ps_calib_name)
+
+    calib.save_json_result(ps_calib_name, LightCalibrationResult=light_calibration_result)
     
     print("\n=== Calibration Completed ===")
     print(f"Selected sphere centers: {calib.sphere_centers}")
     print(f"Selected highlight regions: {calib.highlight_regions}")
 
     # Debugging: Save light vectors in multiple viewpoints
-    debug_vis.save_light_vector_views(calib.light_directions, output_prefix=debug_vector_name)
+    debug_vis.save_light_vector_views(light_dir_XYZ, output_prefix=debug_vector_name, 
+                                      light_dir_deg=light_dir_spherical_list)
     
     # Debugging: Save extraction debug images
     if len(calib.images) > 0 and len(calib.sphere_centers) > 0:
@@ -1023,6 +1074,9 @@ def main_single_sphere():
             cv2.imwrite(rectified_path, img_to_save)
             print(f"  Saved: {rectified_path}")
         print("Rectified images saved successfully.")
+
+    # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+    # KYCAL pipeline end
 
 
 if __name__ == "__main__":

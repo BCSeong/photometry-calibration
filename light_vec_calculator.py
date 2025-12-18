@@ -4,6 +4,18 @@ import json
 import debug_light_vectors as debug_vis
 import os
 import datetime
+from dataclasses import dataclass
+
+@dataclass
+class LightCalibrationResult:
+    light_dir: np.ndarray # (N, 3)
+    light_matrix: np.ndarray # (3, N)
+    errors: np.ndarray # (N, 3)
+    light_dir_spherical_coord: list[dict] # list of dict, each dict is {'elevation_deg': float, 'azimuth_deg_180': float, 'azimuth_deg_360': float}
+    backward: dict # dict of backward light vector, each dict is {'light_dir': np.ndarray, 'light_matrix': np.ndarray, 'light_dir_spherical_coord': list[dict]}
+    version: str # version of the calibration result
+
+
 # deprecated: use compute_light_vector_from_highlight_position instead
 def compute_light_vector_from_angles(offset_px, radius_px, angle_deg):
     """    
@@ -196,6 +208,7 @@ def convert_image_coordinate_to_XYZ_coordinate(light_dir):
     
     return np.array(light_dir_XYZ)
 
+
 # step 3
 def compute_error(light_dir_stack):
     '''
@@ -250,55 +263,133 @@ def average_light_vector(light_dir_list):
     Returns
     '''
     return np.mean(light_dir_list, axis=1)
-
+    
 # step 6
-def save_calibration_json(light_dir, light_matrix, output_filename="ps_calib.json", errors=None, version="0.0.0-1"):
+def convert_XYZ_to_XYZ_backward(light_dir_XYZ):
     """
-    캘리브레이션 결과를 ps_calib.json 형식으로 저장
+    XYZ 좌표계 벡터를 XYZ_backward 좌표계 벡터로 변환
+    단순 XY 벡터에 -1을 곱하여 변환, Z 축은 변환 없음
+    """
+    if light_dir_XYZ.ndim != 2 or light_dir_XYZ.shape[-1] != 3:
+        raise ValueError(f"light_dir_XYZ must be shape (N, 3), got {light_dir_XYZ.shape}")
+    
+    light_dir_XYZ_backward = []
+    for vec in light_dir_XYZ:
+        vec_XYZ_backward = np.array([-vec[0], -vec[1], vec[2]]) # Z 축은 변환 없음
+        light_dir_XYZ_backward.append(vec_XYZ_backward)
+    return np.array(light_dir_XYZ_backward)
+
+# step 7
+def convert_XYZ_to_spherical_coordinate(light_dir_XYZ):
+    """
+    XYZ 좌표계 벡터를 구면 좌표계(elevation, azimuth)로 변환
     
     Parameters
     ----------
-    light_dir : ndarray of shape (N,3)
-        각 조명의 단위 조명 벡터
-    light_matrix : ndarray of shape (3,N)
-        photometric stereo 계산용 조명 행렬
+    light_dir_XYZ : ndarray of shape (N, 3)
+        조명 벡터 [LX, LY, LZ] (XYZ coordinate)
+    
+    Returns
+    -------
+    light_dir_spherical : list of dict
+        각 조명의 구면 좌표 정보
+        [{'elevation_deg': float, 'azimuth_deg_180': float, 'azimuth_deg_360': float}, ...]
+    """
+    if light_dir_XYZ.ndim != 2 or light_dir_XYZ.shape[-1] != 3:
+        raise ValueError(f"light_dir_XYZ must be shape (N, 3), got {light_dir_XYZ.shape}")
+    
+    light_dir_spherical = []
+    
+    for vec in light_dir_XYZ:
+        x, y, z = vec[0], vec[1], vec[2]
+        
+        # 구면 좌표계로 변환
+        r = np.sqrt(x**2 + y**2 + z**2)  # 거리
+        
+        if r > 1e-10:  # 0이 아닌 경우만
+            # Azimuth: XY 평면에서의 각도 (0~360도, X축 기준)
+            azimuth = np.arctan2(y, x)  # -π ~ π
+            
+            # Elevation: 수평면에서 수직으로 올라가는 각도 (0~90도)
+            # z/r = sin(elevation), elevation = arcsin(z/r)
+            elevation = np.arcsin(z / r)  # -π/2 ~ π/2
+            
+            # 각도를 도(degree)로 변환 (Azimuth를 0~360도 범위로 변환)
+            azimuth_deg_180 = np.degrees(azimuth)
+            azimuth_deg_360 = (np.degrees(azimuth) + 360) % 360            
+            elevation_deg = np.degrees(elevation)
+        else:
+            # 벡터가 0인 경우
+            azimuth_deg_180 = 0.0
+            azimuth_deg_360 = 0.0
+            elevation_deg = 0.0
+        
+        light_dir_spherical.append({
+            'elevation_deg': float(elevation_deg),
+            'azimuth_deg_180': float(azimuth_deg_180),
+            'azimuth_deg_360': float(azimuth_deg_360)
+        })
+    
+    return light_dir_spherical
+
+# step 8
+def save_calibration_json(LightCalibrationResult: LightCalibrationResult, output_filename="ps_calib.json"):
+    """
+    Save calibration result to json file
+    Parameters
+    ----------
+    LightCalibrationResult : LightCalibrationResult
+        LightCalibrationResult object
     output_filename : str
-        출력 파일명
-    errors : ndarray of shape (N,3), str, or None
-        각 조명에 대한 오차 
+        Output filename
         - None: placeholder로 [0,0,0] 생성
         - 'ideal': 'ideal' 문자열로 저장 (ideal 조건)
         - ndarray/list: 실제 오차 값 저장
     version : str
         버전 문자열
+    light_dir_spherical_coord : dict, optional
+        각 조명의 구면 좌표 정보
+        {'L1': {'elevation_deg': float, 'azimuth_deg': float}, ...}
     """
     # NumPy 배열을 리스트로 변환
-    light_dir_list = light_dir.tolist()
-    light_matrix_list = light_matrix.tolist()
+    light_dir_list = LightCalibrationResult.light_dir.tolist()
+    light_matrix_list = LightCalibrationResult.light_matrix.tolist()
+    light_dir_spherical_coord = LightCalibrationResult.light_dir_spherical_coord
+    
+    # backward 딕셔너리 내부의 numpy 배열을 리스트로 변환
+    backward = LightCalibrationResult.backward
+    if backward is not None:
+        backward_serialized = {}
+        for key, value in backward.items():
+            if isinstance(value, np.ndarray):
+                backward_serialized[key] = value.tolist()
+            else:
+                backward_serialized[key] = value
+        backward = backward_serialized
     
     # errors 처리
-    if errors is None:
+    if LightCalibrationResult.errors is None:
         # placeholder: 각 조명마다 [0.0, 0.0, 0.0]
-        num_lights = light_dir.shape[0]
+        num_lights = LightCalibrationResult.light_dir.shape[0]
         errors_value = [[0.0, 0.0, 0.0] for _ in range(num_lights)]
-    elif isinstance(errors, str) and errors == 'ideal':
-        # ideal 조건: 문자열로 저장
-        errors_value = 'ideal'
+    elif isinstance(LightCalibrationResult.errors, str):
+        errors_value = LightCalibrationResult.errors
     else:
-        # 실제 오차 값 (ndarray 또는 list)
-        if isinstance(errors, np.ndarray):
-            errors_value = errors.tolist()
+        if isinstance(LightCalibrationResult.errors, np.ndarray):
+            errors_value = LightCalibrationResult.errors.tolist()
         else:
-            errors_value = errors
+            errors_value = LightCalibrationResult.errors
     
     # JSON 구조 생성
     result = {
         "light_dir": light_dir_list,
         "light_matrix": light_matrix_list,
         "errors": errors_value,
-        "version": version
+        "light_dir_spherical_coord": light_dir_spherical_coord,
+        "backward": backward,
+        "version": LightCalibrationResult.version
     }
-    
+        
     # JSON 파일로 저장
     with open(output_filename, 'w', encoding='utf-8') as f:
         json.dump(result, f, indent=2, ensure_ascii=False)
@@ -331,30 +422,63 @@ def test_split_light_single_spheres():
     # manually set highlight positions for L2-split
     # They could be retrieved from the image, but for now, we will set them manually
     radius_px_L2 = 150 # radius of the sphere in pixels
-    highlight_position_L2 = np.array([
+    highlight_position_L2_array = np.array([
                             [-44.5, -44.5],
                             [44.5, 44.5],
                             [-44.5, 44.5],
                             [44.5, -44.5]]).reshape(4, 1, 2) #(u, v)
+    # Convert to list[list[tuple[float, float]]] format
+    highlight_position_L2 = [[(float(pos[0]), float(pos[1])) for pos in sphere_positions] 
+                             for sphere_positions in highlight_position_L2_array]
 
     # step 2: compute light vectors from highlight positions
-    light_dir_L2 = compute_light_vector_from_highlight_position(highlight_position_L2, radius_px_L2) # (# of light, # of spheres, uv)
+    light_dir_L2 = compute_light_vector_from_highlight_position(highlight_position_L2, radius_px_L2) # (# of light, # of spheres, uvw)
+    print(f"Light direction shape (before averaging): {light_dir_L2.shape}")
     
     # step 3: calculate error btw multiple spheres, for single sphere skip this step
     errors = 'single_sphere'
 
     # step 4: average light vectors, for single sphere skip this step
-    light_dir_L2_avg = average_light_vector(light_dir_L2) # (# of light, # of spheres, uvw) -> # (# of light, uv)
+    light_dir_L2_avg = average_light_vector(light_dir_L2) # (# of light, # of spheres, uvw) -> (# of light, uvw)
+    print(f"Light direction shape (after averaging): {light_dir_L2_avg.shape}")
    
     # step 5: convert uvw coordinate to XYZ coordinate, based on ICI library convention
-    light_dir_L2_XYZ = convert_image_coordinate_to_XYZ_coordinate(light_dir_L2_avg) # (N, uvw)
+    light_dir_L2_XYZ = convert_image_coordinate_to_XYZ_coordinate(light_dir_L2_avg) # (N, XYZ)
     light_matrix_L2_XYZ = light_dir_L2_XYZ.T # (3, N)
 
-    # step 6: save calibration results
-    save_calibration_json(light_dir_L2_XYZ, light_matrix_L2_XYZ,
-        errors = errors, output_filename=calibration_filename_XYZ)
+    # step 6: convert XYZ to XYZ_backward
+    light_dir_L2_XYZ_backward = convert_XYZ_to_XYZ_backward(light_dir_L2_XYZ) # (N, XYZ)
+    light_matrix_L2_XYZ_backward = light_dir_L2_XYZ_backward.T # (3, N)
+    
+    # step 7: convert XYZ to spherical coordinate
+    light_dir_spherical_list = convert_XYZ_to_spherical_coordinate(light_dir_L2_XYZ)
+    light_dir_spherical_list_backward = convert_XYZ_to_spherical_coordinate(light_dir_L2_XYZ_backward)
+    
+    # light_dir_spherical_coord를 dict 형태로 변환 (L1, L2, ... 형식)
+    light_dir_spherical_coord = {}
+    for i, spherical_info in enumerate(light_dir_spherical_list):
+        light_name = f'L{i+1}'
+        light_dir_spherical_coord[light_name] = spherical_info
+    
+    # step 8: save json and debug results
+    backward = {
+        'light_dir': light_dir_L2_XYZ_backward,
+        'light_matrix': light_matrix_L2_XYZ_backward,
+        'light_dir_spherical_coord': light_dir_spherical_list_backward
+    }
+    light_calibration_result = LightCalibrationResult(
+        light_dir=light_dir_L2_XYZ,
+        light_matrix=light_matrix_L2_XYZ,
+        errors=errors,
+        light_dir_spherical_coord=light_dir_spherical_coord,
+        backward=backward,
+        version="0.0.0-1"
+    )
+    
+    save_calibration_json(light_calibration_result, output_filename=calibration_filename_XYZ)
     # Debugging: Save light vectors in multiple viewpoints
-    debug_vis.save_light_vector_views(light_dir_L2_XYZ, output_prefix=debug_vector_filename)
+    debug_vis.save_light_vector_views(light_dir_L2_XYZ, output_prefix=debug_vector_filename,
+                                      light_dir_deg=light_dir_spherical_list)
     
 
     # =============================================================================
@@ -383,8 +507,36 @@ def test_split_light_single_spheres():
 
     light_dir_seq_19_single_session, light_matrix_seq_19_single_session = stack_light_vector_and_matrix(light_dir_list, light_matrix_list)
     
-    save_calibration_json(light_dir_seq_19_single_session, light_matrix_seq_19_single_session,
-        errors = 'single_sphere', output_filename=calibration_filename_L2Split_3LayerRing_XYZ)     
+    # step 6: convert XYZ to XYZ_backward
+    light_dir_seq_19_XYZ_backward = convert_XYZ_to_XYZ_backward(light_dir_seq_19_single_session)
+    light_matrix_seq_19_XYZ_backward = light_dir_seq_19_XYZ_backward.T
+    
+    # step 7: convert XYZ to spherical coordinate
+    light_dir_spherical_list_seq_19 = convert_XYZ_to_spherical_coordinate(light_dir_seq_19_single_session)
+    light_dir_spherical_list_backward_seq_19 = convert_XYZ_to_spherical_coordinate(light_dir_seq_19_XYZ_backward)
+    
+    # light_dir_spherical_coord를 dict 형태로 변환 (L1, L2, ... 형식)
+    light_dir_spherical_coord_seq_19 = {}
+    for i, spherical_info in enumerate(light_dir_spherical_list_seq_19):
+        light_name = f'L{i+1}'
+        light_dir_spherical_coord_seq_19[light_name] = spherical_info
+    
+    # step 8: save json and debug results
+    backward_seq_19 = {
+        'light_dir': light_dir_seq_19_XYZ_backward,
+        'light_matrix': light_matrix_seq_19_XYZ_backward,
+        'light_dir_spherical_coord': light_dir_spherical_list_backward_seq_19
+    }
+    light_calibration_result_seq_19 = LightCalibrationResult(
+        light_dir=light_dir_seq_19_single_session,
+        light_matrix=light_matrix_seq_19_single_session,
+        errors='single_sphere',
+        light_dir_spherical_coord=light_dir_spherical_coord_seq_19,
+        backward=backward_seq_19,
+        version="0.0.0-1"
+    )
+    
+    save_calibration_json(light_calibration_result_seq_19, output_filename=calibration_filename_L2Split_3LayerRing_XYZ)     
     print(f"\n\n ================================ test_split_light_single_spheres_end ================================ \n\n")
 
 # test function for multiple spheres, number of light = 4
@@ -415,31 +567,66 @@ def test_split_light_multiple_spheres():
     highlight_position_L2_4 = highlight_position_L2_0 + np.random.randn(pos_h, pos_w) * pseudo_highlight_shift
 
 
-    highlight_position_list = np.array([highlight_position_L2_0, highlight_position_L2_1, highlight_position_L2_2, highlight_position_L2_3, highlight_position_L2_4])
-    highlight_position_list = np.transpose(highlight_position_list, (1, 0, 2)) # (number of lights, number of spheres, uv)
+    highlight_position_list_array = np.array([highlight_position_L2_0, highlight_position_L2_1, highlight_position_L2_2, highlight_position_L2_3, highlight_position_L2_4])
+    highlight_position_list_array = np.transpose(highlight_position_list_array, (1, 0, 2)) # (number of lights, number of spheres, uv)
+    # Convert to list[list[tuple[float, float]]] format
+    highlight_position_list = [[(float(pos[0]), float(pos[1])) for pos in sphere_positions] 
+                                for sphere_positions in highlight_position_list_array]
 
     # step 2: compute light vectors from highlight positions
-    light_dir = compute_light_vector_from_highlight_position(highlight_position_list, radius_px_L2) # (number of lights, uvw)
+    light_dir = compute_light_vector_from_highlight_position(highlight_position_list, radius_px_L2) # (number of lights, number of spheres, uvw)
+    print(f"Light direction shape (before averaging): {light_dir.shape}")
 
-    # step 3: calculate error btw multiple spheres, for multiple spheres skip this step
-    error = compute_error(light_dir) # (number of lights, number of spheres, XYZ)
+    # step 3: calculate error btw multiple spheres
+    error = compute_error(light_dir) # (number of lights, 3)
     good_bad = compute_good_bad(error)
     print(f"Good bad: {good_bad}, mean error: {np.mean(error):.2f}, max error: {np.max(error):.2f}")
-    # assert good_bad, "Error is too large, calibration failed"
+    if not good_bad:
+        print("Error: Bad light vectors")
+        return
 
-    # step 4: average light vectors, for multiple spheres skip this step
+    # step 4: average light vectors
     light_dir_avg = average_light_vector(light_dir) # (N, 3)
+    print(f"Light direction shape (after averaging): {light_dir_avg.shape}")
 
     # step 5: convert uvw coordinate to XYZ coordinate, based on ICI library convention
     light_dir_XYZ = convert_image_coordinate_to_XYZ_coordinate(light_dir_avg) # (number of lights, XYZ)               
-    light_matrix_XYZ = light_dir_XYZ.T # (3, N)    
+    light_matrix_XYZ = light_dir_XYZ.T # (3, N)
 
-    # step 6: save calibration results
-    save_calibration_json(light_dir_XYZ, light_matrix_XYZ,
-        errors = error, output_filename=calibration_filename_XYZ)
+    # step 6: convert XYZ to XYZ_backward
+    light_dir_XYZ_backward = convert_XYZ_to_XYZ_backward(light_dir_XYZ) # (number of lights, XYZ)
+    light_matrix_XYZ_backward = light_dir_XYZ_backward.T # (3, N)
+    
+    # step 7: convert XYZ to spherical coordinate
+    light_dir_spherical_list = convert_XYZ_to_spherical_coordinate(light_dir_XYZ)
+    light_dir_spherical_list_backward = convert_XYZ_to_spherical_coordinate(light_dir_XYZ_backward)
+    
+    # light_dir_spherical_coord를 dict 형태로 변환 (L1, L2, ... 형식)
+    light_dir_spherical_coord = {}
+    for i, spherical_info in enumerate(light_dir_spherical_list):
+        light_name = f'L{i+1}'
+        light_dir_spherical_coord[light_name] = spherical_info
+    
+    # step 8: save json and debug results
+    backward = {
+        'light_dir': light_dir_XYZ_backward,
+        'light_matrix': light_matrix_XYZ_backward,
+        'light_dir_spherical_coord': light_dir_spherical_list_backward
+    }
+    light_calibration_result = LightCalibrationResult(
+        light_dir=light_dir_XYZ,
+        light_matrix=light_matrix_XYZ,
+        errors=error,
+        light_dir_spherical_coord=light_dir_spherical_coord,
+        backward=backward,
+        version="0.0.0-1"
+    )
+
+    save_calibration_json(light_calibration_result, output_filename=calibration_filename_XYZ)
 
     # Debugging: Save light vectors in multiple viewpoints
-    debug_vis.save_light_vector_views(light_dir_XYZ, output_prefix=debug_vector_filename)
+    debug_vis.save_light_vector_views(light_dir_XYZ, output_prefix=debug_vector_filename,
+                                      light_dir_deg=light_dir_spherical_list)
     print(f"\n\n ================================ test_split_light_multiple_spheres_end ================================ \n\n")
 
 if __name__ == "__main__":

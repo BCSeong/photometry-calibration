@@ -25,8 +25,21 @@ def _setup_3d_axes(ax):
     ax.grid(True)
 
 
-def _draw_vectors(ax, light_dir):
-    """조명 벡터 그리기 - 각 점에 label 추가하고 (0,0,0)으로 향하는 벡터 그리기"""
+def _draw_vectors(ax, light_dir, light_dir_deg=None):
+    """조명 벡터 그리기 - 각 점에 label 추가하고 (0,0,0)으로 향하는 벡터 그리기
+    
+    Parameters
+    ----------
+    ax : matplotlib.axes.Axes
+        3D axes 객체
+    light_dir : ndarray of shape (N, 3)
+        조명 벡터 배열 [X, Y, Z]
+    light_dir_deg : list of dict, optional
+        각 조명의 구면 좌표 정보
+        [{'elevation_deg': float, 'azimuth_deg_180': float, 'azimuth_deg_360': float}, ...]
+        azimuth_deg_360이 기본으로 사용됨
+        None이면 light_dir에서 계산
+    """
     colors = plt.cm.tab10(np.linspace(0, 1, len(light_dir)))
     
     # 각 조명 벡터 위치에 점 그리기
@@ -34,76 +47,92 @@ def _draw_vectors(ax, light_dir):
         color = colors[i % len(colors)]
         x, y, z = ray[0], ray[1], ray[2]
         
-        # 구면 좌표계로 변환 (elevation과 azimuth 계산)
-        r = np.sqrt(x**2 + y**2 + z**2)  # 거리
-        if r > 1e-10:  # 0이 아닌 경우만
-            # Azimuth: XY 평면에서의 각도 (0~360도, X축 기준)
-            azimuth = np.arctan2(y, x)  # -π ~ π
-            
-            # Elevation: 수평면에서 수직으로 올라가는 각도 (0~90도)
-            # z/r = sin(elevation), elevation = arcsin(z/r)
-            elevation = np.arcsin(z / r)  # -π/2 ~ π/2
-            
-            # 1. 점 그리기
-            ax.scatter(x, y, z, color=color, s=100)
-            
-            # 2. Label과 각도 정보를 텍스트로 표시 (Azimuth를 0~360도 범위로 변환)
-            azimuth_deg = (np.degrees(azimuth) + 360) % 360
-            elevation_deg = np.degrees(elevation)
-            
-            # 라벨과 각도 정보를 하나의 텍스트박스로 병합
-            ax.text(x * 1.15, y * 1.15, z * 1.15, 
-                   f'L{i+1}\nAz:{azimuth_deg:.1f}°\nEl:{elevation_deg:.1f}°',
-                   fontsize=10, color=color, alpha=0.9,
-                   bbox=dict(boxstyle='round,pad=0.4', facecolor='white', alpha=0.85, edgecolor=color, linewidth=0.5))
-            
-            # 3. 각 점에서 (0,0,0)으로 향하는 벡터 그리기
-            # 벡터 방향: (0,0,0) - ray = -ray
-            ax.quiver(x, y, z, 
-                     -x, -y, -z,
-                     color=color, arrow_length_ratio=0.2, linewidth=2)
-            
-            # 4. Azimuth 각도 표시 (XY 평면에 투영한 원호)
-            # XY 평면에서 원점에서 벡터의 XY projection까지의 선
-            if np.sqrt(x**2 + y**2) > 1e-10:  # XY 평면에 투영이 있을 때만
-                # 원점에서 XY projection까지의 선 (얇은 점선)
-                ax.plot([0, x], [0, y], [0, 0], 
-                       color=color, linestyle='--', linewidth=0.8, alpha=0.6)
+        # 구면 좌표계 정보 가져오기 (light_dir_deg가 제공되면 사용, 아니면 계산)
+        if light_dir_deg is not None and i < len(light_dir_deg):
+            # azimuth_deg_360을 기본으로 사용
+            azimuth_deg = light_dir_deg[i].get('azimuth_deg_360', light_dir_deg[i].get('azimuth_deg', 0.0))
+            elevation_deg = light_dir_deg[i]['elevation_deg']
+            # 시각화를 위해 라디안으로 변환
+            azimuth = np.radians(azimuth_deg)
+            elevation = np.radians(elevation_deg)
+        else:
+            # 구면 좌표계로 변환 (elevation과 azimuth 계산)
+            r = np.sqrt(x**2 + y**2 + z**2)  # 거리
+            if r > 1e-10:  # 0이 아닌 경우만
+                # Azimuth: XY 평면에서의 각도 (0~360도, X축 기준)
+                azimuth = np.arctan2(y, x)  # -π ~ π
                 
-                # Azimuth 각도 원호 그리기 (XY 평면에서)
-                # 작은 반경의 원호로 각도 표시
-                arc_radius = r * 0.3  # 벡터 길이의 30%
-                num_points = 20
-                arc_angles = np.linspace(0, azimuth, num_points)
-                arc_x = arc_radius * np.cos(arc_angles)
-                arc_y = arc_radius * np.sin(arc_angles)
-                ax.plot(arc_x, arc_y, [0] * num_points,
-                       color=color, linestyle='--', linewidth=0.8, alpha=0.5)
+                # Elevation: 수평면에서 수직으로 올라가는 각도 (0~90도)
+                # z/r = sin(elevation), elevation = arcsin(z/r)
+                elevation = np.arcsin(z / r)  # -π/2 ~ π/2
+                
+                # 각도를 도(degree)로 변환 (Azimuth를 0~360도 범위로 변환)
+                azimuth_deg = (np.degrees(azimuth) + 360) % 360
+                elevation_deg = np.degrees(elevation)
+            else:
+                azimuth_deg = 0.0
+                elevation_deg = 0.0
+                azimuth = 0.0
+                elevation = 0.0
+        
+        # 1. 점 그리기
+        ax.scatter(x, y, z, color=color, s=100)
+        
+        # 2. Label과 각도 정보를 텍스트로 표시
+        # 라벨과 각도 정보를 하나의 텍스트박스로 병합
+        ax.text(x * 1.15, y * 1.15, z * 1.15, 
+               f'L{i+1}\nAz:{azimuth_deg:.1f}°\nEl:{elevation_deg:.1f}°',
+               fontsize=10, color=color, alpha=0.9,
+               bbox=dict(boxstyle='round,pad=0.4', facecolor='white', alpha=0.85, edgecolor=color, linewidth=0.5))
+        
+        # 3. 각 점에서 (0,0,0)으로 향하는 벡터 그리기
+        # 벡터 방향: (0,0,0) - ray = -ray
+        ax.quiver(x, y, z, 
+                 -x, -y, -z,
+                 color=color, arrow_length_ratio=0.2, linewidth=2)
+        
+        # 4. Azimuth 각도 표시 (XY 평면에 투영한 원호)
+        # XY 평면에서 원점에서 벡터의 XY projection까지의 선
+        r = np.sqrt(x**2 + y**2 + z**2)
+        if np.sqrt(x**2 + y**2) > 1e-10:  # XY 평면에 투영이 있을 때만
+            # 원점에서 XY projection까지의 선 (얇은 점선)
+            ax.plot([0, x], [0, y], [0, 0], 
+                   color=color, linestyle='--', linewidth=0.8, alpha=0.6)
             
-            # 5. Elevation 각도 표시 (수직 평면에서)
-            # XY projection에서 점까지의 수직선과 원점에서 XY projection까지의 선 사이의 각도
-            xy_proj_len = np.sqrt(x**2 + y**2)
-            if xy_proj_len > 1e-10:
-                # 수직 평면에서 elevation 각도 원호 그리기
-                # 수직 평면은 XY projection 방향을 포함하는 평면
-                arc_radius_vert = r * 0.3  # 벡터 길이의 30%
-                num_points_vert = 20
-                elev_angles = np.linspace(0, elevation, num_points_vert)
-                
-                # 수직 평면에서의 좌표 (azimuth 방향으로 회전)
-                cos_az = x / xy_proj_len
-                sin_az = y / xy_proj_len
-                
-                # elevation 원호의 점들 (수직 평면에서)
-                arc_x_vert = arc_radius_vert * np.cos(elev_angles) * cos_az
-                arc_y_vert = arc_radius_vert * np.cos(elev_angles) * sin_az
-                arc_z_vert = arc_radius_vert * np.sin(elev_angles)
-                
-                ax.plot(arc_x_vert, arc_y_vert, arc_z_vert,
-                       color=color, linestyle='--', linewidth=0.8, alpha=0.5)
+            # Azimuth 각도 원호 그리기 (XY 평면에서)
+            # 작은 반경의 원호로 각도 표시
+            arc_radius = r * 0.3  # 벡터 길이의 30%
+            num_points = 20
+            arc_angles = np.linspace(0, azimuth, num_points)
+            arc_x = arc_radius * np.cos(arc_angles)
+            arc_y = arc_radius * np.sin(arc_angles)
+            ax.plot(arc_x, arc_y, [0] * num_points,
+                   color=color, linestyle='--', linewidth=0.8, alpha=0.5)
+        
+        # 5. Elevation 각도 표시 (수직 평면에서)
+        # XY projection에서 점까지의 수직선과 원점에서 XY projection까지의 선 사이의 각도
+        xy_proj_len = np.sqrt(x**2 + y**2)
+        if xy_proj_len > 1e-10:
+            # 수직 평면에서 elevation 각도 원호 그리기
+            # 수직 평면은 XY projection 방향을 포함하는 평면
+            arc_radius_vert = r * 0.3  # 벡터 길이의 30%
+            num_points_vert = 20
+            elev_angles = np.linspace(0, elevation, num_points_vert)
+            
+            # 수직 평면에서의 좌표 (azimuth 방향으로 회전)
+            cos_az = x / xy_proj_len
+            sin_az = y / xy_proj_len
+            
+            # elevation 원호의 점들 (수직 평면에서)
+            arc_x_vert = arc_radius_vert * np.cos(elev_angles) * cos_az
+            arc_y_vert = arc_radius_vert * np.cos(elev_angles) * sin_az
+            arc_z_vert = arc_radius_vert * np.sin(elev_angles)
+            
+            ax.plot(arc_x_vert, arc_y_vert, arc_z_vert,
+                   color=color, linestyle='--', linewidth=0.8, alpha=0.5)
 
 
-def draw_light_vector(light_dir, view_azim=None, view_elev=None, title="Light Vectors"):
+def draw_light_vector(light_dir, view_azim=None, view_elev=None, title="Light Vectors", light_dir_deg=None):
     """
     Draw light vectors and return figure object
     
@@ -117,6 +146,10 @@ def draw_light_vector(light_dir, view_azim=None, view_elev=None, title="Light Ve
         Elevation angle for view (degrees)
     title : str
         Plot title
+    light_dir_deg : list of dict, optional
+        각 조명의 구면 좌표 정보
+        [{'elevation_deg': float, 'azimuth_deg_180': float, 'azimuth_deg_360': float}, ...]
+        azimuth_deg_360이 기본으로 사용됨
     
     Returns
     -------
@@ -126,7 +159,7 @@ def draw_light_vector(light_dir, view_azim=None, view_elev=None, title="Light Ve
     fig = plt.figure(figsize=(10, 8))
     ax = fig.add_subplot(111, projection='3d')
     
-    _draw_vectors(ax, light_dir)
+    _draw_vectors(ax, light_dir, light_dir_deg=light_dir_deg)
     
     if view_azim is not None and view_elev is not None:
         ax.view_init(elev=view_elev, azim=view_azim)
@@ -137,7 +170,7 @@ def draw_light_vector(light_dir, view_azim=None, view_elev=None, title="Light Ve
     return fig
 
 
-def save_light_vector_views(light_dir, output_prefix="light_vectors"):
+def save_light_vector_views(light_dir, output_prefix="light_vectors", light_dir_deg=None):
     """
     여러 시점의 조명 벡터를 PNG로 저장
     
@@ -147,6 +180,10 @@ def save_light_vector_views(light_dir, output_prefix="light_vectors"):
         조명 벡터 배열
     output_prefix : str
         PNG 파일명 접두사
+    light_dir_deg : list of dict, optional
+        각 조명의 구면 좌표 정보
+        [{'elevation_deg': float, 'azimuth_deg_180': float, 'azimuth_deg_360': float}, ...]
+        azimuth_deg_360이 기본으로 사용됨
     
     Returns
     -------
@@ -164,11 +201,11 @@ def save_light_vector_views(light_dir, output_prefix="light_vectors"):
     
     for view_name, azim, elev in viewpoints:
         if view_name == 'current':
-            fig = draw_light_vector(light_dir, title=f'Light Vectors - {view_name.capitalize()} View')
+            fig = draw_light_vector(light_dir, title=f'Light Vectors - {view_name.capitalize()} View', light_dir_deg=light_dir_deg)
             filename = f"{output_prefix}_current.png"
         else:
             fig = draw_light_vector(light_dir, view_azim=azim, view_elev=elev, 
-                                   title=f'Light Vectors - {view_name.capitalize()} View')
+                                   title=f'Light Vectors - {view_name.capitalize()} View', light_dir_deg=light_dir_deg)
             filename = f"{output_prefix}_{view_name}.png"
         
         fig.savefig(filename, dpi=150, bbox_inches='tight')
