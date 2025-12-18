@@ -7,11 +7,11 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import Circle, Rectangle, Polygon
 from PIL import Image
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Union
 import os
 
 
-def save_extraction_debug_images(image_paths: List[str], 
+def save_extraction_debug_images(image_inputs: Union[List[str], List[np.ndarray]], 
                                  sphere_centers: List[Tuple[int, int]],
                                  highlight_regions: List[Tuple[Tuple[int, int], Tuple[int, int]]],
                                  sphere_diameter_px: float,
@@ -22,8 +22,8 @@ def save_extraction_debug_images(image_paths: List[str],
     
     Parameters
     ----------
-    image_paths : List[str]
-        이미지 파일 경로 리스트
+    image_inputs : Union[List[str], List[np.ndarray]]
+        이미지 파일 경로 리스트 또는 이미지 배열 리스트
     sphere_centers : List[Tuple[int, int]]
         각 이미지의 sphere center 좌표 리스트 (x, y)
     highlight_regions : List[Tuple[Tuple[int, int], Tuple[int, int]]]
@@ -35,24 +35,31 @@ def save_extraction_debug_images(image_paths: List[str],
     highlight_contours : Optional[List[Optional[List[Tuple[int, int]]]]]
         각 이미지의 highlight contour 좌표 리스트 (Auto 모드에서 감지된 blob contour)
     """
-    if len(image_paths) != len(sphere_centers) or len(image_paths) != len(highlight_regions):
-        raise ValueError("image_paths, sphere_centers, highlight_regions must have the same length")
+    if len(image_inputs) != len(sphere_centers) or len(image_inputs) != len(highlight_regions):
+        raise ValueError("image_inputs, sphere_centers, highlight_regions must have the same length")
     
     if highlight_contours is None:
-        highlight_contours = [None] * len(image_paths)
+        highlight_contours = [None] * len(image_inputs)
     
     crop_size = int(sphere_diameter_px * 1.5)
     half_crop = crop_size // 2
     
     cropped_images = []
     
-    for img_path, center, highlight, contour in zip(image_paths, sphere_centers, highlight_regions, highlight_contours):
-        # 이미지 로드
-        try:
-            pil_image = Image.open(img_path)
-            img = np.array(pil_image)
-        except Exception as e:
-            raise ValueError(f"Cannot load image: {img_path}, error: {e}")
+    for img_input, center, highlight, contour in zip(image_inputs, sphere_centers, highlight_regions, highlight_contours):
+        # 이미지 로드: 경로인지 배열인지 확인
+        if isinstance(img_input, str):
+            # 경로인 경우 파일에서 로드
+            try:
+                pil_image = Image.open(img_input)
+                img = np.array(pil_image)
+            except Exception as e:
+                raise ValueError(f"Cannot load image: {img_input}, error: {e}")
+        elif isinstance(img_input, np.ndarray):
+            # 배열인 경우 그대로 사용
+            img = img_input.copy()
+        else:
+            raise TypeError(f"image_inputs must be List[str] or List[np.ndarray], got {type(img_input)}")
         
         # 좌표 추출 (x, y)
         center_x, center_y = center

@@ -17,6 +17,9 @@ from scipy import ndimage
 from scipy.ndimage import label, find_objects, binary_fill_holes
 from skimage.measure import find_contours
 import traceback
+from pathlib import Path
+import cv2
+import tifffile as tiff
 import light_vec_calculator as lvcalc
 import debug_light_vectors as debug_vis
 import debug_image_extraction as debug_img
@@ -35,6 +38,11 @@ class SimpleCalibrationMatplotlib:
         self.light_directions = []
         self.light_matrix = None
         self.errors = 'single_sphere'
+        
+        # Rectification 관련
+        self.map_x = None
+        self.map_y = None
+        self.rectified_images = []  # rectified 이미지 배열 저장
         
         # 선택 상태 변수들
         self.current_image = None
@@ -70,9 +78,43 @@ class SimpleCalibrationMatplotlib:
             traceback.print_stack(limit=limit)
         except Exception as e:
             print(f"[DEBUG] STACK TRACE FAILED: {e}")
+    
+    def _load_map_pair(self, map_dir: Path) -> Tuple[np.ndarray, np.ndarray]:
+        """map_dir에서 *map_x.tiff, *map_y.tiff 패턴으로 파일을 찾아 float32로 로드."""
+        mx_matches = sorted(map_dir.glob('*map_x.tiff'))
+        my_matches = sorted(map_dir.glob('*map_y.tiff'))
         
-    def load_images(self, image_pattern: str) -> List[str]:
-        """glob 패턴으로 이미지들을 로드"""
+        if not mx_matches:
+            raise FileNotFoundError(f"Missing map_x file in {map_dir}: no file matching '*map_x.tiff'")
+        if not my_matches:
+            raise FileNotFoundError(f"Missing map_y file in {map_dir}: no file matching '*map_y.tiff'")
+        
+        mx_path = mx_matches[0]
+        my_path = my_matches[0]
+        
+        map_x = tiff.imread(str(mx_path)).astype(np.float32, copy=False)
+        map_y = tiff.imread(str(my_path)).astype(np.float32, copy=False)
+        if map_x.shape != map_y.shape:
+            raise ValueError(f"map_x and map_y shape mismatch: {map_x.shape} vs {map_y.shape}")
+        return map_x, map_y
+    
+    def _remap_image(self, src_img: np.ndarray, map_x: np.ndarray, map_y: np.ndarray, 
+                     interpolation: int = cv2.INTER_LINEAR, 
+                     border_mode: int = cv2.BORDER_CONSTANT, 
+                     border_value: float = 0.0) -> np.ndarray:
+        """cv2.remap을 사용해 src_img를 재배치. 채널 수/비트심도 보존."""
+        dst = cv2.remap(src_img, map_x, map_y, interpolation=interpolation, 
+                       borderMode=border_mode, borderValue=border_value)
+        return dst
+    
+    def load_remap_maps(self, map_dir: str):
+        """remap map 파일들을 로드"""
+        map_dir_path = Path(map_dir)
+        self.map_x, self.map_y = self._load_map_pair(map_dir_path)
+        print(f"Remap maps loaded: size={self.map_x.shape[::-1]} (W,H)")
+    
+    def load_images(self, image_pattern: str, apply_rectification: bool = False) -> List[str]:
+        """glob 패턴으로 이미지들을 로드하고 선택적으로 rectification 적용"""
         image_paths = sorted(glob.glob(image_pattern))
         
         if not image_paths:
@@ -80,6 +122,24 @@ class SimpleCalibrationMatplotlib:
         
         print(f"Loaded images: {len(image_paths)}")
         self.images = image_paths
+        self.rectified_images = []
+        
+        # Rectification 적용
+        if apply_rectification:
+            if self.map_x is None or self.map_y is None:
+                raise ValueError("Remap maps not loaded. Call load_remap_maps() first.")
+            
+            print("Applying rectification to images...")
+            for i, image_path in enumerate(image_paths):
+                # 이미지 로드
+                pil_image = Image.open(image_path)
+                img_array = np.array(pil_image)
+                
+                # Rectification 적용
+                rectified = self._remap_image(img_array, self.map_x, self.map_y)
+                self.rectified_images.append(rectified)
+                print(f"  Rectified image {i+1}/{len(image_paths)}: {os.path.basename(image_path)}")
+        
         return image_paths
     
     def on_click(self, event):
@@ -256,27 +316,17 @@ class SimpleCalibrationMatplotlib:
         y_min = max(0, y_min)
         y_max = min(img_height, y_max)
         
-        # 검색 영역 확장 (1.5배)
-        search_width = x_max - x_min
-        search_height = y_max - y_min
-        center_x = (x_min + x_max) // 2
-        center_y = (y_min + y_max) // 2
-        
-        expanded_x_min = max(0, center_x - int(search_width * 0.75))
-        expanded_x_max = min(img_width, center_x + int(search_width * 0.75))
-        expanded_y_min = max(0, center_y - int(search_height * 0.75))
-        expanded_y_max = min(img_height, center_y + int(search_height * 0.75))
-        
+        # 사용자가 선택한 박스 영역만 사용 (확장하지 않음)
         # 이미지 crop
         if len(self.current_image.shape) == 3:
-            search_area = self.current_image[expanded_y_min:expanded_y_max, expanded_x_min:expanded_x_max]
+            search_area = self.current_image[y_min:y_max, x_min:x_max]
             # Grayscale로 변환
             if search_area.shape[2] == 3:
                 search_area_gray = np.mean(search_area, axis=2).astype(np.uint8)
             else:
                 search_area_gray = search_area[:, :, 0]
         else:
-            search_area_gray = self.current_image[expanded_y_min:expanded_y_max, expanded_x_min:expanded_x_max]
+            search_area_gray = self.current_image[y_min:y_max, x_min:x_max]
         
         # Threshold 계산 (상위 75% 밝기)
         threshold = np.percentile(search_area_gray, 75) 
@@ -302,8 +352,8 @@ class SimpleCalibrationMatplotlib:
             
             # Blob의 중심 계산
             y_coords, x_coords = np.where(blob_mask)
-            blob_center_x = np.mean(x_coords) + expanded_x_min
-            blob_center_y = np.mean(y_coords) + expanded_y_min
+            blob_center_x = np.mean(x_coords) + x_min
+            blob_center_y = np.mean(y_coords) + y_min
             
             # 원래 선택 영역 중심까지의 거리
             original_center_x = (x_min + x_max) / 2
@@ -359,10 +409,10 @@ class SimpleCalibrationMatplotlib:
             
             if len(contours) == 0:
                 # Contour를 찾지 못한 경우 bounding box 사용
-                blob_x_min = int(np.min(x_coords)) + expanded_x_min
-                blob_x_max = int(np.max(x_coords)) + expanded_x_min
-                blob_y_min = int(np.min(y_coords)) + expanded_y_min
-                blob_y_max = int(np.max(y_coords)) + expanded_y_min
+                blob_x_min = int(np.min(x_coords)) + x_min
+                blob_x_max = int(np.max(x_coords)) + x_min
+                blob_y_min = int(np.min(y_coords)) + y_min
+                blob_y_max = int(np.max(y_coords)) + y_min
                 contour = [
                     (blob_x_min, blob_y_min),
                     (blob_x_max, blob_y_min),
@@ -378,14 +428,14 @@ class SimpleCalibrationMatplotlib:
             
             # find_contours는 (row, col) = (y, x) 순서로 반환
             # 우리는 (x, y) 순서로 변환하고 전체 이미지 좌표계로 변환
-            contour = [(int(col) + expanded_x_min, int(row) + expanded_y_min) 
+            contour = [(int(col) + x_min, int(row) + y_min) 
                       for row, col in largest_contour]
             
             # 전체 이미지 좌표계로 변환된 mask
             full_mask = np.zeros((img_height, img_width), dtype=bool)
             local_y_coords, local_x_coords = np.where(blob_mask_local)
-            full_y_coords = local_y_coords + expanded_y_min
-            full_x_coords = local_x_coords + expanded_x_min
+            full_y_coords = local_y_coords + y_min
+            full_x_coords = local_x_coords + x_min
             # 경계 체크
             valid = (full_y_coords < img_height) & (full_x_coords < img_width) & (full_y_coords >= 0) & (full_x_coords >= 0)
             full_mask[full_y_coords[valid], full_x_coords[valid]] = True
@@ -395,10 +445,10 @@ class SimpleCalibrationMatplotlib:
         except Exception as e:
             # find_contours 실패 시 bounding box 사용
             print(f"Warning: find_contours failed, using bounding box: {e}")
-            blob_x_min = int(np.min(x_coords)) + expanded_x_min
-            blob_x_max = int(np.max(x_coords)) + expanded_x_min
-            blob_y_min = int(np.min(y_coords)) + expanded_y_min
-            blob_y_max = int(np.max(y_coords)) + expanded_y_min
+            blob_x_min = int(np.min(x_coords)) + x_min
+            blob_x_max = int(np.max(x_coords)) + x_min
+            blob_y_min = int(np.min(y_coords)) + y_min
+            blob_y_max = int(np.max(y_coords)) + y_min
             contour = [
                 (blob_x_min, blob_y_min),
                 (blob_x_max, blob_y_min),
@@ -551,10 +601,17 @@ class SimpleCalibrationMatplotlib:
         
         self.auto_mode = auto_mode
         
-        # 이미지 로드
+        # 이미지 로드 (rectified 이미지가 있으면 사용, 없으면 원본 사용)
         try:
-            pil_image = Image.open(image_path)
-            self.current_image = np.array(pil_image)
+            # rectified 이미지가 있으면 사용
+            if len(self.rectified_images) > image_index:
+                self.current_image = self.rectified_images[image_index]
+                print(f"[DEBUG] Using rectified image for index {image_index}")
+            else:
+                # 원본 이미지 로드
+                pil_image = Image.open(image_path)
+                self.current_image = np.array(pil_image)
+                print(f"[DEBUG] Using original image for index {image_index}")
         except Exception as e:
             raise ValueError(f"Cannot load image: {image_path}, error: {e}")
         
@@ -767,13 +824,13 @@ def main_single_sphere():
     
     # 픽셀 해상도 입력
     try:
-        pixel_resolution = float(input("Enter pixel resolution (mm/px): "))
+        pixel_resolution = float(input("Enter pixel resolution FROM CAMERA CALIBRATION OR STEREO CALIBRATION (mm/px): "))
     except ValueError:
         print("Invalid input. Using default 0.1mm/px.")
         pixel_resolution = 0.01
     
     # Highlight 영역 선택 모드 선택
-    mode_input = input("Highlight 영역을 직접 그리시겠습니까? (Yes/Auto) [Yes]: ").strip().lower()
+    mode_input = input("Highlight 영역을 직접 그리시겠습니까? (Yes or auto)) ").strip().lower()
     auto_mode = (mode_input == 'auto' or mode_input == 'a')
     
     if auto_mode:
@@ -786,10 +843,22 @@ def main_single_sphere():
     calib.sphere_diameter = sphere_diameter
     calib.pixel_resolution = pixel_resolution
     
-    # 이미지 로드
-    # TODO : 이미지 로드 이전에 기존에 생성된 remap 으로 rectification 하여 불러와야 함.
+    # Remap 디렉토리 입력 (선택적)
+    remap_dir = input("Enter remap directory path (or press Enter to skip rectification): ").strip()
+    apply_rectification = False
+    if remap_dir:
+        try:
+            calib.load_remap_maps(remap_dir)
+            apply_rectification = True
+            print("Rectification will be applied to all images.")
+        except Exception as e:
+            print(f"Warning: Failed to load remap maps: {e}")
+            print("Continuing without rectification...")
+            apply_rectification = False
+    
+    # 이미지 로드 및 rectification 적용
     try:
-        image_paths = calib.load_images(image_pattern)
+        image_paths = calib.load_images(image_pattern, apply_rectification=apply_rectification)
     except ValueError as e:
         print(f"Error: {e}")
         return
@@ -897,14 +966,63 @@ def main_single_sphere():
     if len(calib.images) > 0 and len(calib.sphere_centers) > 0:
         sphere_radius_px = (calib.sphere_diameter / calib.pixel_resolution) / 2.0
         sphere_diameter_px = calib.sphere_diameter / calib.pixel_resolution
-        debug_img.save_extraction_debug_images(
-            calib.images, 
-            calib.sphere_centers, 
-            calib.highlight_regions,
-            sphere_diameter_px,
-            debug_extraction_name,
-            highlight_contours=calib.highlight_contours
-        )
+        
+        # rectified 이미지가 있으면 사용, 없으면 원본 이미지 경로 사용
+        if len(calib.rectified_images) > 0:
+            print("Using rectified images for debug_extraction.png")
+            debug_img.save_extraction_debug_images(
+                calib.rectified_images, 
+                calib.sphere_centers, 
+                calib.highlight_regions,
+                sphere_diameter_px,
+                debug_extraction_name,
+                highlight_contours=calib.highlight_contours
+            )
+        else:
+            print("Using original images for debug_extraction.png")
+            debug_img.save_extraction_debug_images(
+                calib.images, 
+                calib.sphere_centers, 
+                calib.highlight_regions,
+                sphere_diameter_px,
+                debug_extraction_name,
+                highlight_contours=calib.highlight_contours
+            )
+    
+    # Debugging: Save rectified images
+    if len(calib.rectified_images) > 0:
+        rectified_dir = save_path + '/rectified_images'
+        if not os.path.exists(rectified_dir):
+            os.makedirs(rectified_dir)
+        
+        print(f"\nSaving {len(calib.rectified_images)} rectified images to {rectified_dir}...")
+        for i, rectified_img in enumerate(calib.rectified_images):
+            image_name = os.path.basename(calib.images[i])
+            image_stem = os.path.splitext(image_name)[0]
+            rectified_path = os.path.join(rectified_dir, f"rectified_{image_stem}.bmp")
+            
+            # 이미지 형식 변환 (cv2.imwrite를 위해)
+            img_to_save = rectified_img.copy()
+            
+            # float 형식이면 uint8로 변환
+            if img_to_save.dtype != np.uint8:
+                if img_to_save.dtype == np.float32 or img_to_save.dtype == np.float64:
+                    # 0-1 범위면 0-255로 스케일링, 아니면 클리핑
+                    if img_to_save.max() <= 1.0:
+                        img_to_save = (img_to_save * 255).astype(np.uint8)
+                    else:
+                        img_to_save = np.clip(img_to_save, 0, 255).astype(np.uint8)
+                else:
+                    # 다른 형식은 uint8로 변환 시도
+                    img_to_save = np.clip(img_to_save, 0, 255).astype(np.uint8)
+            
+            # RGB -> BGR 변환 (3채널인 경우)
+            if len(img_to_save.shape) == 3 and img_to_save.shape[2] == 3:
+                img_to_save = cv2.cvtColor(img_to_save, cv2.COLOR_RGB2BGR)
+            
+            cv2.imwrite(rectified_path, img_to_save)
+            print(f"  Saved: {rectified_path}")
+        print("Rectified images saved successfully.")
 
 
 if __name__ == "__main__":

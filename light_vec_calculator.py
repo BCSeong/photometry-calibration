@@ -168,23 +168,23 @@ def convert_image_coordinate_to_XYZ_coordinate(light_dir):
         v : 아래쪽(↓, South)        
         w : u (cross) v (카메라에서 물체로 향함 (out of image plane))
     - XYZ 좌표계 (ICI library convention):
-        X : 위쪽(↑, North) ← v 매핑
-        Y : 왼쪽(←, West) ← u 매핑
+        X : 아래쪽(↓, South) ← v 매핑
+        Y : 오른쪽(→, East) ← u 매핑
         Z : X (cross) Y (외적으로 결정)
     
     회전 행렬:
-        [X]   [0  -1  0] [u]
-        [Y] = [-1  0  0] [v]
+        [X]   [0   1  0] [u]
+        [Y] = [1   0  0] [v]
         [Z]   [0   0 -1] [w]
     """
     if light_dir.ndim != 2 or light_dir.shape[-1] != 3:
         raise ValueError(f"light_dir must be shape (N, 3), got {light_dir.shape}")
     
     # 회전 행렬 정의
-    # X ← v (North), Y ← u (West), Z는 외적으로 결정
+    # X ← v (South), Y ← u (East), Z는 외적으로 결정
     rotation_matrix = np.array([
-        [0,  -1,  0],  # X = -v
-        [-1,  0,  0],  # Y = -u
+        [0,   1,  0],  # X = v
+        [1,   0,  0],  # Y = u
         [0,   0, -1]   # Z = -w (X × Y에 의해 결정됨)
     ])
     
