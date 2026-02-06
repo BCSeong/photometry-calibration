@@ -972,16 +972,22 @@ def main_single_sphere():
         light_dir_spherical_coord_backward[light_name] = spherical_info_backward
     
     # step 8: save json and debug results
+    forward = {
+        'light_dir': light_dir_XYZ,
+        'light_matrix': light_matrix_XYZ,
+        'light_dir_spherical_coord': light_dir_spherical_list
+    }
+    
     backward = {
         'light_dir': light_dir_XYZ_backward,
         'light_matrix': light_matrix_XYZ_backward,
         'light_dir_spherical_coord': light_dir_spherical_list_backward
     }
+
+
     light_calibration_result = lvcalc.LightCalibrationResult(
-        light_dir=light_dir_XYZ,
-        light_matrix=light_matrix_XYZ,
+        forward=forward,
         errors=error,
-        light_dir_spherical_coord=light_dir_spherical_coord,
         backward=backward,
         version="0.0.0-1"
     )

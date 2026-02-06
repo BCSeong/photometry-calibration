@@ -7,12 +7,10 @@ import datetime
 from dataclasses import dataclass
 
 @dataclass
-class LightCalibrationResult:
-    light_dir: np.ndarray # (N, 3)
-    light_matrix: np.ndarray # (3, N)
-    errors: np.ndarray # (N, 3)
-    light_dir_spherical_coord: list[dict] # list of dict, each dict is {'elevation_deg': float, 'azimuth_deg_180': float, 'azimuth_deg_360': float}
+class LightCalibrationResult:    
+    forward: dict # dict of forward light vector, each dict is {'light_dir': np.ndarray, 'light_matrix': np.ndarray, 'light_dir_spherical_coord': list[dict]}
     backward: dict # dict of backward light vector, each dict is {'light_dir': np.ndarray, 'light_matrix': np.ndarray, 'light_dir_spherical_coord': list[dict]}
+    errors: np.ndarray # (N, 3)       
     version: str # version of the calibration result
 
 
@@ -279,6 +277,26 @@ def convert_XYZ_to_XYZ_backward(light_dir_XYZ):
         light_dir_XYZ_backward.append(vec_XYZ_backward)
     return np.array(light_dir_XYZ_backward)
 
+
+def atan2_azimuth_to_360_degree(azimuth):
+    """
+    atan2 결과(라디안, -π~π)를 0~360 도 범위로 변환.
+    원소가 음수이면 360을 더하고, 아니면 그대로 둠. (기존 (deg+360)%360 과 동일 결과)
+    
+    Parameters
+    ----------
+    azimuth : float or ndarray
+        라디안 각도 (-π ~ π)
+    
+    Returns
+    -------
+    float or ndarray
+        0 ~ 360 도
+    """
+    deg = np.degrees(azimuth)
+    return np.where(deg < 0, deg + 360.0, deg)
+
+
 # step 7
 def convert_XYZ_to_spherical_coordinate(light_dir_XYZ):
     """
@@ -293,7 +311,7 @@ def convert_XYZ_to_spherical_coordinate(light_dir_XYZ):
     -------
     light_dir_spherical : list of dict
         각 조명의 구면 좌표 정보
-        [{'elevation_deg': float, 'azimuth_deg_180': float, 'azimuth_deg_360': float}, ...]
+        [{'elevation_deg': float, 'azimuth_deg': float}, ...]
     """
     if light_dir_XYZ.ndim != 2 or light_dir_XYZ.shape[-1] != 3:
         raise ValueError(f"light_dir_XYZ must be shape (N, 3), got {light_dir_XYZ.shape}")
@@ -307,7 +325,7 @@ def convert_XYZ_to_spherical_coordinate(light_dir_XYZ):
         r = np.sqrt(x**2 + y**2 + z**2)  # 거리
         
         if r > 1e-10:  # 0이 아닌 경우만
-            # Azimuth: XY 평면에서의 각도 (0~360도, X축 기준)
+            # Azimuth: XY 평면에서의 각도 (-π ~ π, X축 기준)
             azimuth = np.arctan2(y, x)  # -π ~ π
             
             # Elevation: 수평면에서 수직으로 올라가는 각도 (0~90도)
@@ -315,19 +333,16 @@ def convert_XYZ_to_spherical_coordinate(light_dir_XYZ):
             elevation = np.arcsin(z / r)  # -π/2 ~ π/2
             
             # 각도를 도(degree)로 변환 (Azimuth를 0~360도 범위로 변환)
-            azimuth_deg_180 = np.degrees(azimuth)
-            azimuth_deg_360 = (np.degrees(azimuth) + 360) % 360            
+            azimuth_deg = atan2_azimuth_to_360_degree(azimuth)
             elevation_deg = np.degrees(elevation)
         else:
             # 벡터가 0인 경우
-            azimuth_deg_180 = 0.0
-            azimuth_deg_360 = 0.0
+            azimuth_deg = 0.0
             elevation_deg = 0.0
         
         light_dir_spherical.append({
             'elevation_deg': float(elevation_deg),
-            'azimuth_deg_180': float(azimuth_deg_180),
-            'azimuth_deg_360': float(azimuth_deg_360)
+            'azimuth_deg': float(azimuth_deg)
         })
     
     return light_dir_spherical
@@ -351,10 +366,16 @@ def save_calibration_json(LightCalibrationResult: LightCalibrationResult, output
         각 조명의 구면 좌표 정보
         {'L1': {'elevation_deg': float, 'azimuth_deg': float}, ...}
     """
-    # NumPy 배열을 리스트로 변환
-    light_dir_list = LightCalibrationResult.light_dir.tolist()
-    light_matrix_list = LightCalibrationResult.light_matrix.tolist()
-    light_dir_spherical_coord = LightCalibrationResult.light_dir_spherical_coord
+    # NumPy 딕셔너리 내부의 numpy 배열을 리스트로 변환
+    forward = LightCalibrationResult.forward
+    if forward is not None:
+        forward_serialized = {}
+        for key, value in forward.items():
+            if isinstance(value, np.ndarray):
+                forward_serialized[key] = value.tolist()
+            else:
+                forward_serialized[key] = value
+        forward = forward_serialized
     
     # backward 딕셔너리 내부의 numpy 배열을 리스트로 변환
     backward = LightCalibrationResult.backward
@@ -370,7 +391,7 @@ def save_calibration_json(LightCalibrationResult: LightCalibrationResult, output
     # errors 처리
     if LightCalibrationResult.errors is None:
         # placeholder: 각 조명마다 [0.0, 0.0, 0.0]
-        num_lights = LightCalibrationResult.light_dir.shape[0]
+        num_lights = LightCalibrationResult.forward['light_dir'].shape[0]
         errors_value = [[0.0, 0.0, 0.0] for _ in range(num_lights)]
     elif isinstance(LightCalibrationResult.errors, str):
         errors_value = LightCalibrationResult.errors
@@ -381,12 +402,10 @@ def save_calibration_json(LightCalibrationResult: LightCalibrationResult, output
             errors_value = LightCalibrationResult.errors
     
     # JSON 구조 생성
-    result = {
-        "light_dir": light_dir_list,
-        "light_matrix": light_matrix_list,
-        "errors": errors_value,
-        "light_dir_spherical_coord": light_dir_spherical_coord,
+    result = {        
+        "forward": forward,
         "backward": backward,
+        "errors": errors_value,
         "version": LightCalibrationResult.version
     }
         
@@ -461,17 +480,20 @@ def test_split_light_single_spheres():
         light_dir_spherical_coord[light_name] = spherical_info
     
     # step 8: save json and debug results
+    forward = {
+        'light_dir': light_dir_L2_XYZ,
+        'light_matrix': light_matrix_L2_XYZ,
+        'light_dir_spherical_coord': light_dir_spherical_list
+    }
     backward = {
         'light_dir': light_dir_L2_XYZ_backward,
         'light_matrix': light_matrix_L2_XYZ_backward,
         'light_dir_spherical_coord': light_dir_spherical_list_backward
     }
     light_calibration_result = LightCalibrationResult(
-        light_dir=light_dir_L2_XYZ,
-        light_matrix=light_matrix_L2_XYZ,
-        errors=errors,
-        light_dir_spherical_coord=light_dir_spherical_coord,
+        forward=forward,
         backward=backward,
+        errors=errors,
         version="0.0.0-1"
     )
     

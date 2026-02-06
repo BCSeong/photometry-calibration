@@ -36,8 +36,7 @@ def _draw_vectors(ax, light_dir, light_dir_deg=None):
         조명 벡터 배열 [X, Y, Z]
     light_dir_deg : list of dict, optional
         각 조명의 구면 좌표 정보
-        [{'elevation_deg': float, 'azimuth_deg_180': float, 'azimuth_deg_360': float}, ...]
-        azimuth_deg_360이 기본으로 사용됨
+        [{'elevation_deg': float, 'azimuth_deg': float}, ...]
         None이면 light_dir에서 계산
     """
     colors = plt.cm.tab10(np.linspace(0, 1, len(light_dir)))
@@ -49,32 +48,12 @@ def _draw_vectors(ax, light_dir, light_dir_deg=None):
         
         # 구면 좌표계 정보 가져오기 (light_dir_deg가 제공되면 사용, 아니면 계산)
         if light_dir_deg is not None and i < len(light_dir_deg):
-            # azimuth_deg_360을 기본으로 사용
-            azimuth_deg = light_dir_deg[i].get('azimuth_deg_360', light_dir_deg[i].get('azimuth_deg', 0.0))
+            azimuth_deg = light_dir_deg[i]['azimuth_deg']
             elevation_deg = light_dir_deg[i]['elevation_deg']
             # 시각화를 위해 라디안으로 변환
             azimuth = np.radians(azimuth_deg)
             elevation = np.radians(elevation_deg)
-        else:
-            # 구면 좌표계로 변환 (elevation과 azimuth 계산)
-            r = np.sqrt(x**2 + y**2 + z**2)  # 거리
-            if r > 1e-10:  # 0이 아닌 경우만
-                # Azimuth: XY 평면에서의 각도 (0~360도, X축 기준)
-                azimuth = np.arctan2(y, x)  # -π ~ π
-                
-                # Elevation: 수평면에서 수직으로 올라가는 각도 (0~90도)
-                # z/r = sin(elevation), elevation = arcsin(z/r)
-                elevation = np.arcsin(z / r)  # -π/2 ~ π/2
-                
-                # 각도를 도(degree)로 변환 (Azimuth를 0~360도 범위로 변환)
-                azimuth_deg = (np.degrees(azimuth) + 360) % 360
-                elevation_deg = np.degrees(elevation)
-            else:
-                azimuth_deg = 0.0
-                elevation_deg = 0.0
-                azimuth = 0.0
-                elevation = 0.0
-        
+
         # 1. 점 그리기
         ax.scatter(x, y, z, color=color, s=100)
         
@@ -148,8 +127,7 @@ def draw_light_vector(light_dir, view_azim=None, view_elev=None, title="Light Ve
         Plot title
     light_dir_deg : list of dict, optional
         각 조명의 구면 좌표 정보
-        [{'elevation_deg': float, 'azimuth_deg_180': float, 'azimuth_deg_360': float}, ...]
-        azimuth_deg_360이 기본으로 사용됨
+        [{'elevation_deg': float, 'azimuth_deg': float}, ...]
     
     Returns
     -------
@@ -182,8 +160,7 @@ def save_light_vector_views(light_dir, output_prefix="light_vectors", light_dir_
         PNG 파일명 접두사
     light_dir_deg : list of dict, optional
         각 조명의 구면 좌표 정보
-        [{'elevation_deg': float, 'azimuth_deg_180': float, 'azimuth_deg_360': float}, ...]
-        azimuth_deg_360이 기본으로 사용됨
+        [{'elevation_deg': float, 'azimuth_deg': float}, ...]
     
     Returns
     -------

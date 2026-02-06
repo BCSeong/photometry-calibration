@@ -78,7 +78,7 @@ python simple_calibration_matplotlib.py
   - `light_dir`: 조명 벡터 배열 (XYZ 좌표계)
   - `light_matrix`: 조명 행렬 (photometric stereo 계산용)
   - `errors`: 각 조명에 대한 오차
-  - `light_dir_spherical_coord`: 각 조명의 구면 좌표 (elevation_deg, azimuth_deg_180, azimuth_deg_360)
+  - `light_dir_spherical_coord`: 각 조명의 구면 좌표 (elevation_deg, azimuth_deg)
   - `backward`: XYZ_backward 좌표계의 조명 벡터 및 구면 좌표
   - `version`: 버전 정보
 - `debug_vector.png_*.png`: 조명 벡터 3D 시각화 (여러 시점)
@@ -109,8 +109,13 @@ python simple_calibration_matplotlib.py
 
 ### 구면 좌표계
 - `elevation_deg`: 수평면에서 수직으로 올라가는 각도 (-90° ~ 90°)
-- `azimuth_deg_180`: XY 평면에서의 각도 (-180° ~ 180°, X축 기준)
-- `azimuth_deg_360`: XY 평면에서의 각도 (0° ~ 360°, X축 기준, 기본 사용)
+- `azimuth_deg`: XY 평면에서의 각도 (0° ~ 360°, X축 기준)
+--> 수식: 
+        x, y, z = vec[0], vec[1], vec[2]
+        
+        # 구면 좌표계로 변환
+        r = np.sqrt(x**2 + y**2 + z**2)  # 거리
+                    azimuth = np.arctan2(y, x)  # -π ~ π
 
 ## 개발 상태
 - [x] 기본 프로젝트 구조
