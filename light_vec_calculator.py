@@ -503,62 +503,6 @@ def test_split_light_single_spheres():
                                       light_dir_deg=light_dir_spherical_list)
     
 
-    # =============================================================================
-    # Create dummy light vectors and matrices for L1-ring, L2-ring, L3-ring
-    # So that they do not affect the result of the photometry calculation
-    # =============================================================================
-    light_dir_L1_ring, light_matrix_L1_ring = creadte_dummy_light_vector_and_matrix()
-    light_dir_L2_ring, light_matrix_L2_ring = creadte_dummy_light_vector_and_matrix()
-    light_dir_L3_ring, light_matrix_L3_ring = creadte_dummy_light_vector_and_matrix()
-
-    # =============================================================================
-    # Calibration results for L2-split + 3Layer Ring
-    # =============================================================================
-    
-    # L2W1 - L1 - L2W2 - L2 - L2W3 - L3 - L2W4 - L1
-    light_dir_list = [light_dir_L2_XYZ[[0]], light_dir_L1_ring, 
-                        light_dir_L2_XYZ[[1]], light_dir_L2_ring, 
-                        light_dir_L2_XYZ[[2]], light_dir_L3_ring,
-                        light_dir_L2_XYZ[[3]], light_dir_L1_ring]
-    
-    # L2W1 - L1 - L2W2 - L2 - L2W3 - L3 - L2W4 - L1
-    light_matrix_list = [light_matrix_L2_XYZ[:,[0]], light_matrix_L1_ring, 
-                        light_matrix_L2_XYZ[:,[1]], light_matrix_L2_ring, 
-                        light_matrix_L2_XYZ[:,[2]], light_matrix_L3_ring,
-                        light_matrix_L2_XYZ[:,[3]], light_matrix_L1_ring]
-
-    light_dir_seq_19_single_session, light_matrix_seq_19_single_session = stack_light_vector_and_matrix(light_dir_list, light_matrix_list)
-    
-    # step 6: convert XYZ to XYZ_backward
-    light_dir_seq_19_XYZ_backward = convert_XYZ_to_XYZ_backward(light_dir_seq_19_single_session)
-    light_matrix_seq_19_XYZ_backward = light_dir_seq_19_XYZ_backward.T
-    
-    # step 7: convert XYZ to spherical coordinate
-    light_dir_spherical_list_seq_19 = convert_XYZ_to_spherical_coordinate(light_dir_seq_19_single_session)
-    light_dir_spherical_list_backward_seq_19 = convert_XYZ_to_spherical_coordinate(light_dir_seq_19_XYZ_backward)
-    
-    # light_dir_spherical_coord를 dict 형태로 변환 (L1, L2, ... 형식)
-    light_dir_spherical_coord_seq_19 = {}
-    for i, spherical_info in enumerate(light_dir_spherical_list_seq_19):
-        light_name = f'L{i+1}'
-        light_dir_spherical_coord_seq_19[light_name] = spherical_info
-    
-    # step 8: save json and debug results
-    backward_seq_19 = {
-        'light_dir': light_dir_seq_19_XYZ_backward,
-        'light_matrix': light_matrix_seq_19_XYZ_backward,
-        'light_dir_spherical_coord': light_dir_spherical_list_backward_seq_19
-    }
-    light_calibration_result_seq_19 = LightCalibrationResult(
-        light_dir=light_dir_seq_19_single_session,
-        light_matrix=light_matrix_seq_19_single_session,
-        errors='single_sphere',
-        light_dir_spherical_coord=light_dir_spherical_coord_seq_19,
-        backward=backward_seq_19,
-        version="0.0.0-1"
-    )
-    
-    save_calibration_json(light_calibration_result_seq_19, output_filename=calibration_filename_L2Split_3LayerRing_XYZ)     
     print(f"\n\n ================================ test_split_light_single_spheres_end ================================ \n\n")
 
 # test function for multiple spheres, number of light = 4
@@ -577,7 +521,7 @@ def test_split_light_multiple_spheres():
     # manually set highlight positions for L2-split
     # They could be retrieved from the image, but for now, we will set them manually
     radius_px_L2 = 150 # radius of the sphere in pixels
-    pseudo_highlight_shift = 10
+    pseudo_highlight_shift = 3
     highlight_position_L2_0 = np.array([[-44.5, -44.5],
                                          [44.5, 44.5],
                                          [-44.5, 44.5],
@@ -630,16 +574,19 @@ def test_split_light_multiple_spheres():
         light_dir_spherical_coord[light_name] = spherical_info
     
     # step 8: save json and debug results
+    forward = {
+        'light_dir': light_dir_XYZ,
+        'light_matrix': light_matrix_XYZ,
+        'light_dir_spherical_coord': light_dir_spherical_list
+    }
     backward = {
         'light_dir': light_dir_XYZ_backward,
         'light_matrix': light_matrix_XYZ_backward,
         'light_dir_spherical_coord': light_dir_spherical_list_backward
     }
     light_calibration_result = LightCalibrationResult(
-        light_dir=light_dir_XYZ,
-        light_matrix=light_matrix_XYZ,
+        forward=forward,
         errors=error,
-        light_dir_spherical_coord=light_dir_spherical_coord,
         backward=backward,
         version="0.0.0-1"
     )
