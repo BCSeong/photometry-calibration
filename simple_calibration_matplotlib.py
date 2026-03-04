@@ -827,6 +827,14 @@ def main_single_sphere():
         print("Invalid input. Using default 0.1mm/px.")
         pixel_resolution = 0.01
     
+    # 이미지 1장당 구(sphere) 개수 입력 (1 = single sphere, 2 이상 = 같은 이미지에서 구 여러 개 선택)
+    try:
+        num_spheres = int(input("Enter number of spheres per image (1 for single sphere): ").strip())
+        if num_spheres < 1:
+            num_spheres = 1
+    except ValueError:
+        num_spheres = 1
+    
     # Highlight 영역 선택 모드 선택
     mode_input = input("Highlight 영역을 직접 그리시겠습니까? (Yes or auto)) ").strip().lower()
     auto_mode = (mode_input == 'auto' or mode_input == 'a')
@@ -859,7 +867,7 @@ def main_single_sphere():
 
     # 0) 이미지 로드
     # 1) 각 이미지에서 구슬 중심과 하이라이트 영역 선택 (highlight 영역 수집만)
-    # 2) highlight_position을 (number of lights, 1, 2) 형태로 변환
+    # 2) highlight_position을 (number of lights, number of spheres, 2) 형태로 변환
     # 3) compute light vectors from highlight positions
     #   -> 구슬 하나 마다 분할조명 개수 길이의 light vector 계산
     # 4) average light vectors 
@@ -876,75 +884,78 @@ def main_single_sphere():
         print(f"Error: {e}")
         return
     
-    # step 1: 각 이미지에서 구슬 중심과 하이라이트 영역 선택 (highlight 영역 수집만)
+    # step 1: 각 이미지(조명)에서 구슬 중심·하이라이트 영역 선택 (이미지 1장당 num_spheres개 구 선택 → 같은 이미지를 num_spheres번 반복 선택)
+    num_lights = len(image_paths)
     for i, image_path in enumerate(image_paths):
-        print(f"\n[DEBUG] ===== MAIN LOOP: Processing image {i+1}/{len(image_paths)} =====")
-        print(f"[DEBUG] Image path: {image_path}")
-        try:
-            center, highlight = calib.select_sphere_and_highlight(image_path, i, auto_mode=auto_mode)
-            print(f"[DEBUG] MAIN LOOP: select_sphere_and_highlight returned - center: {center}, highlight: {highlight}")
-            if center and highlight:
-                calib.sphere_centers.append(center)
-                calib.highlight_regions.append(highlight)
-                # Auto 모드에서 감지된 contour 저장
-                if auto_mode and calib.detected_blob:
-                    calib.highlight_contours.append(calib.detected_blob)
+        for s in range(num_spheres):
+            print(f"\n[DEBUG] ===== MAIN LOOP: Image {i+1}/{num_lights} (sphere {s+1}/{num_spheres}) =====")
+            print(f"[DEBUG] Image path: {image_path}")
+            try:
+                center, highlight = calib.select_sphere_and_highlight(image_path, i, auto_mode=auto_mode)
+                print(f"[DEBUG] MAIN LOOP: select_sphere_and_highlight returned - center: {center}, highlight: {highlight}")
+                if center and highlight:
+                    calib.sphere_centers.append(center)
+                    calib.highlight_regions.append(highlight)
+                    if auto_mode and calib.detected_blob:
+                        calib.highlight_contours.append(calib.detected_blob)
+                    else:
+                        calib.highlight_contours.append(None)
+                    print(f"Image {i+1} sphere {s+1} selection completed: center={center}, highlight={highlight}")
                 else:
-                    calib.highlight_contours.append(None)
-                print(f"Image {i+1} selection completed: center={center}, highlight={highlight}")
-            else:
-                print(f"[DEBUG] MAIN LOOP: Image {i+1} selection incomplete (center or highlight is None), skipping...")
-                print(f"Image {i+1} selection incomplete, skipping...")
-                
-        except Exception as e:
-            print(f"[DEBUG] MAIN LOOP: Exception occurred for image {i+1}: {e}")
-            import traceback
-            traceback.print_exc()
-            print(f"Error processing image {i+1}: {e}")
-            continue
-        print(f"[DEBUG] ===== MAIN LOOP: Finished processing image {i+1} =====\n")
+                    print(f"[DEBUG] MAIN LOOP: Image {i+1} sphere {s+1} selection incomplete, skipping...")
+                    print(f"Image {i+1} sphere {s+1} selection incomplete, skipping...")
+            except Exception as e:
+                print(f"[DEBUG] MAIN LOOP: Exception occurred for image {i+1} sphere {s+1}: {e}")
+                import traceback
+                traceback.print_exc()
+                print(f"Error processing image {i+1} sphere {s+1}: {e}")
+                continue
+        print(f"[DEBUG] ===== Finished image {i+1} =====\n")
 
-    # highlight_position을 (number of lights, 1, 2) 형태로 변환
+    # highlight_position을 (number of lights, number of spheres, 2) 형태로 변환
     if len(calib.sphere_centers) == 0 or len(calib.highlight_regions) == 0:
         print("Error: No sphere centers or highlight regions collected.")
         return
     
-    num_lights = len(calib.highlight_regions)
+    n_collected = len(calib.highlight_regions)
+    if n_collected != num_lights * num_spheres:
+        print(f"Error: Collected {n_collected} (center,highlight) pairs but num_lights={num_lights}, num_spheres={num_spheres}. Expected {num_lights * num_spheres}.")
+        return
     sphere_radius_px = (sphere_diameter / pixel_resolution) / 2.0
     
-    # highlight_position 리스트 구성: 각 이미지의 highlight 중심을 구 중심 기준 상대 좌표로 변환
+    # highlight_position 리스트 구성: (center, highlight) 쌍을 구 중심 기준 (u,v)로 변환 후, 조명별로 num_spheres개씩 묶음
     highlight_position_list = []
-    for center, highlight in zip(calib.sphere_centers, calib.highlight_regions):
-        # 하이라이트 영역의 중심 계산
-        start_point, end_point = highlight
-        highlight_center = ((start_point[0] + end_point[0]) / 2, 
-                           (start_point[1] + end_point[1]) / 2)
-        
-        # 구슬 중심에서 하이라이트 중심까지의 벡터 (픽셀 단위)
-        # 영상 좌표계: u (→, East), v (↓, South)
-        u = highlight_center[0] - center[0]  # x (horizontal) 차이 = u (→, East)
-        v = highlight_center[1] - center[1]  # y (vertical) 차이 = v (↓, South)
-        
-        highlight_position_list.append([(u, v)])  # (number of spheres=1, (u,v)) 형태
+    for light_idx in range(num_lights):
+        spheres_uv = []
+        for s in range(num_spheres):
+            i = light_idx * num_spheres + s
+            center = calib.sphere_centers[i]
+            highlight = calib.highlight_regions[i]
+            start_point, end_point = highlight
+            highlight_center = ((start_point[0] + end_point[0]) / 2,
+                               (start_point[1] + end_point[1]) / 2)
+            u = highlight_center[0] - center[0]  # x (horizontal) = u (→, East)
+            v = highlight_center[1] - center[1]  # y (vertical) = v (↓, South)
+            spheres_uv.append((u, v))
+        highlight_position_list.append(spheres_uv)
     
-    # (number of lights, number of spheres=1, 2) 형태로 변환
-    # compute_light_vector_from_highlight_position은 list를 받지만, numpy array도 처리 가능
-    highlight_position = highlight_position_list  # list[list[tuple[float, float]]] 형태
-    print(f"Number of lights: {len(highlight_position)}")
+    # (number of lights, number of spheres, 2) 형태
+    highlight_position = highlight_position_list
+    print(f"Number of lights: {num_lights}, number of spheres: {num_spheres}")
     print(f"Sphere radius (px): {sphere_radius_px}")
     
     # step 2: compute light vectors from highlight positions
     light_dir = lvcalc.compute_light_vector_from_highlight_position(highlight_position, sphere_radius_px)  # (num_lights, 1, uvw)
     print(f"Light direction shape (before averaging): {light_dir.shape}") # (num_lights, number of spheres, uvw)
 
-    # step 3: calculate error btw multiple spheres, for single sphere skip this step
+    # step 3: calculate error btw multiple spheres (num_spheres>=2일 때 의미 있음)
     error = lvcalc.compute_error(light_dir)  # (num_lights, number of spheres, XYZ)
     good_bad = lvcalc.compute_good_bad(error)  # boolean (True if good, False if bad)
     if not good_bad:
         print("Error: Bad light vectors")
         return
     
-    # step 4: average light vectors (single sphere이므로)
+    # step 4: average light vectors (구 차원으로 평균)
     light_dir_avg = lvcalc.average_light_vector(light_dir)  # return result is (num_lights, uvw)
     print(f"Light direction shape (after averaging): {light_dir_avg.shape}")
     
@@ -1019,32 +1030,24 @@ def main_single_sphere():
     debug_vis.save_light_vector_views(light_dir_XYZ, output_prefix=debug_vector_name, 
                                       light_dir_deg=light_dir_spherical_list)
     
-    # Debugging: Save extraction debug images
+    # Debugging: Save extraction debug images (그리드: num_spheres 행 × num_lights 열)
     if len(calib.images) > 0 and len(calib.sphere_centers) > 0:
-        sphere_radius_px = (calib.sphere_diameter / calib.pixel_resolution) / 2.0
         sphere_diameter_px = calib.sphere_diameter / calib.pixel_resolution
-        
-        # rectified 이미지가 있으면 사용, 없으면 원본 이미지 경로 사용
+        images_for_debug = calib.rectified_images if len(calib.rectified_images) > 0 else calib.images
         if len(calib.rectified_images) > 0:
             print("Using rectified images for debug_extraction.png")
-            debug_img.save_extraction_debug_images(
-                calib.rectified_images, 
-                calib.sphere_centers, 
-                calib.highlight_regions,
-                sphere_diameter_px,
-                debug_extraction_name,
-                highlight_contours=calib.highlight_contours
-            )
         else:
             print("Using original images for debug_extraction.png")
-            debug_img.save_extraction_debug_images(
-                calib.images, 
-                calib.sphere_centers, 
-                calib.highlight_regions,
-                sphere_diameter_px,
-                debug_extraction_name,
-                highlight_contours=calib.highlight_contours
-            )
+        debug_img.save_extraction_debug_images(
+            images_for_debug,
+            calib.sphere_centers,
+            calib.highlight_regions,
+            sphere_diameter_px,
+            debug_extraction_name,
+            highlight_contours=calib.highlight_contours,
+            num_lights=num_lights,
+            num_spheres=num_spheres,
+        )
     
     # Debugging: Save rectified images
     if len(calib.rectified_images) > 0:
