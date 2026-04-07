@@ -1,19 +1,16 @@
-#!/usr/bin/env python3
 """
 Auto Photometry Calibration
 입력 이미지를 평균하여 sphere를 자동 검출하는 캘리브레이션 파이프라인.
-CLI로 동작.
 """
 
 import os
-import sys
-import argparse
 import datetime
 import numpy as np
 import cv2
 from typing import List, Tuple, Optional
-import image_utils
-import light_vec_calculator as lvcalc
+
+from . import image_utils
+from . import light_vec_calculator as lvcalc
 
 
 def compute_average_image(images: List[np.ndarray]) -> np.ndarray:
@@ -32,11 +29,7 @@ def _detect_blob_centers(
     sphere_radius_px: float,
     sphere_diameter_px: float,
 ) -> list:
-    """Step 1: SimpleBlobDetector로 검정 중심 위치를 검출.
-
-    이미지를 반전하여 검정 중심을 밝은 blob으로 만든 뒤 검출합니다.
-    반환: keypoints 리스트
-    """
+    """Step 1: SimpleBlobDetector로 검정 중심 위치를 검출."""
     inverted = cv2.bitwise_not(avg_image)
 
     params = cv2.SimpleBlobDetector_Params()
@@ -75,20 +68,10 @@ def _find_outer_radius_radial(
     sphere_radius_px: float,
     num_angles: int = 360,
 ) -> Tuple[np.ndarray, float]:
-    """Step 2: 중심에서 방사형 gradient profile로 외경 edge point를 탐색.
-
-    각 방향에서 gradient가 최대인 지점(밝은 고리 → 배경 전이)을 찾아
-    edge point 집합을 반환합니다.
-
-    Returns:
-        (edge_points, median_radius)
-        edge_points: (N, 2) 배열 - 각 방향에서 찾은 외경 edge 좌표 (x, y)
-        median_radius: edge point들의 중심으로부터 중앙값 반경
-    """
+    """Step 2: 중심에서 방사형 gradient profile로 외경 edge point를 탐색."""
     h, w = avg_image.shape[:2]
     img_float = avg_image.astype(np.float64)
 
-    # 탐색 범위: 기대 반경 ±20% (외경 prior 활용)
     r_min = sphere_radius_px * 0.9
     r_max = sphere_radius_px * 1.1
     num_samples = max(int(r_max - r_min), 50)
@@ -101,7 +84,6 @@ def _find_outer_radius_radial(
         cos_a = np.cos(angle)
         sin_a = np.sin(angle)
 
-        # 해당 방향의 radial intensity profile 샘플링
         profile = np.zeros(len(radii))
         for j, r in enumerate(radii):
             x = cx + r * cos_a
@@ -110,7 +92,6 @@ def _find_outer_radius_radial(
             if 0 <= ix < w and 0 <= iy < h:
                 profile[j] = img_float[iy, ix]
 
-        # Gradient magnitude peak = 외경 edge
         grad_abs = np.abs(np.diff(profile))
         if len(grad_abs) == 0:
             continue
@@ -130,18 +111,10 @@ def _find_outer_radius_radial(
 
 
 def _fit_ellipse_contour(edge_points: np.ndarray) -> Tuple[tuple, np.ndarray]:
-    """Edge point 집합에 타원을 fit하고 contour를 생성.
-
-    Returns:
-        (ellipse_params, contour)
-        ellipse_params: ((cx, cy), (major, minor), angle) - cv2.fitEllipse 결과
-        contour: (N, 1, 2) int32 배열 - 타원 contour
-    """
+    """Edge point 집합에 타원을 fit하고 contour를 생성."""
     pts_for_fit = edge_points.reshape(-1, 1, 2).astype(np.float32)
     ellipse = cv2.fitEllipse(pts_for_fit)
-    # ellipse = ((cx, cy), (width, height), angle)
 
-    # 타원 contour 생성
     contour = cv2.ellipse2Poly(
         center=(int(round(ellipse[0][0])), int(round(ellipse[0][1]))),
         axes=(int(round(ellipse[1][0] / 2)), int(round(ellipse[1][1] / 2))),
@@ -166,13 +139,6 @@ def find_spheres(
     Step 2: 중심에서 방사형 gradient profile → 외경 edge point 탐색
     Step 3: edge point에 타원 fit → contour 생성
 
-    Args:
-        avg_image: 평균 이미지 (grayscale uint8)
-        sphere_diameter_mm: sphere 직경 (mm)
-        pixel_resolution_mm_per_px: 픽셀 해상도 (mm/px)
-        num_spheres_expected: 기대하는 sphere 개수
-        debug_dir: debug 이미지 저장 디렉토리
-
     Returns:
         검출된 sphere 정보 리스트 또는 개수 불일치 시 None
     """
@@ -180,7 +146,6 @@ def find_spheres(
     sphere_radius_px = sphere_diameter_px / 2.0
     print(f"Sphere 직경: {sphere_diameter_px:.1f} px (반경: {sphere_radius_px:.1f} px)")
 
-    # --- Step 1: Blob 중심 검출 ---
     _, keypoints = _detect_blob_centers(avg_image, sphere_radius_px, sphere_diameter_px)
 
     print(f"SimpleBlobDetector 검출 수: {len(keypoints)}")
@@ -188,9 +153,7 @@ def find_spheres(
         print(f"  blob [{i}] center=({kp.pt[0]:.1f}, {kp.pt[1]:.1f}), "
               f"blob_diameter={kp.size:.1f}px")
 
-    # blob 개수 확인 (Step 1 단계에서 실패 시 조기 종료)
     if len(keypoints) != num_spheres_expected:
-        # blob 결과로도 debug 이미지 저장
         blob_candidates = []
         for kp in keypoints:
             cx, cy = kp.pt
@@ -211,7 +174,6 @@ def find_spheres(
         print(f"\nDebug 이미지가 '{debug_dir}'에 저장되었습니다.")
         return None
 
-    # --- Step 2 & 3: 각 blob에 대해 외경 탐색 + 타원 fit ---
     candidates = []
     for i, kp in enumerate(keypoints):
         cx, cy = kp.pt
@@ -229,7 +191,7 @@ def find_spheres(
         ecx, ecy = ellipse[0]
         major, minor = ellipse[1]
         angle = ellipse[2]
-        avg_radius = (major + minor) / 4.0  # semi-axis 평균
+        avg_radius = (major + minor) / 4.0
 
         print(f"    외경 타원: center=({ecx:.1f}, {ecy:.1f}), "
               f"axes=({major:.1f}, {minor:.1f}), angle={angle:.1f}")
@@ -243,10 +205,8 @@ def find_spheres(
             'edge_points': edge_points,
         })
 
-    # --- Debug 이미지 저장 (항상) ---
     _save_debug_overlay_image(avg_image, candidates, num_spheres_expected, debug_dir)
 
-    # --- 개수 확인 ---
     if len(candidates) != num_spheres_expected:
         print(f"\n[실패] Step 2: 외경 fit 성공 수({len(candidates)})가 "
               f"기대값({num_spheres_expected})과 다릅니다.")
@@ -272,17 +232,13 @@ def _save_debug_overlay_image(
         cx, cy = c['center']
         r = c['radius']
 
-        # 타원 contour (ellipse 정보가 있으면 사용, 없으면 원)
         if 'ellipse' in c:
             ellipse = c['ellipse']
             cv2.ellipse(debug_img, ellipse, color, 2)
         else:
             cv2.circle(debug_img, (int(cx), int(cy)), int(r), color, 2)
 
-        # 중심점 (채워진 원)
         cv2.circle(debug_img, (int(cx), int(cy)), 5, color, -1)
-
-        # 라벨: 인덱스 + 반경
         cv2.putText(debug_img, f"#{i} r={r:.0f}", (int(cx) + 10, int(cy) - 10),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
 
@@ -304,23 +260,12 @@ def extract_highlight(
 ) -> Optional[Tuple[Tuple[int, int], list]]:
     """Sphere 내부에서 가장 밝은 blob(highlight)을 추출.
 
-    Sphere 영역을 마스킹한 뒤, 상위 밝기 threshold로 blob을 찾고
-    가장 큰 blob의 중심과 contour를 반환합니다.
-
-    Args:
-        image: 개별 조명 이미지 (grayscale uint8)
-        sphere_center: sphere 중심 좌표 (x, y)
-        sphere_radius_px: sphere 반경 (px)
-
     Returns:
-        (highlight_center, contour_points) 또는 None
-        highlight_center: (x, y)
-        contour_points: [(x, y), ...] contour 좌표 리스트
+        ((hcx, hcy), contour_points, highlight_pixels) 또는 None
     """
     h, w = image.shape[:2]
     cx, cy = sphere_center
 
-    # Sphere 영역 crop (bounding box)
     r = int(sphere_radius_px)
     x_min = max(0, int(cx) - r)
     x_max = min(w, int(cx) + r)
@@ -330,115 +275,80 @@ def extract_highlight(
     crop = image[y_min:y_max, x_min:x_max].copy()
     crop_h, crop_w = crop.shape[:2]
 
-    # 원형 마스크 (sphere 외부 제거)
     yy, xx = np.ogrid[:crop_h, :crop_w]
     dist = np.sqrt((xx - (cx - x_min))**2 + (yy - (cy - y_min))**2)
-    sphere_mask = dist <= sphere_radius_px * 0.95  # 95% 영역
+    sphere_mask = dist <= sphere_radius_px * 0.95
 
-    # Sphere 외부를 0으로
     masked = crop.copy()
     masked[~sphere_mask] = 0
 
-    # Highlight = saturated pixel (255)
     binary = ((masked == 255) & sphere_mask).astype(np.uint8) * 255
 
-    # Morphological cleanup
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
     binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel)
     binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
 
-    # Contour 검출
     contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if not contours:
         return None
 
-    # 가장 큰 contour 선택
     largest = max(contours, key=cv2.contourArea)
     if cv2.contourArea(largest) < 5:
         return None
 
-    # 중심 (moments)
     M = cv2.moments(largest)
     if M['m00'] == 0:
         return None
     hcx = M['m10'] / M['m00'] + x_min
     hcy = M['m01'] / M['m00'] + y_min
 
-    # Contour 좌표를 원본 이미지 좌표로 변환
     contour_points = [(int(pt[0][0]) + x_min, int(pt[0][1]) + y_min) for pt in largest]
 
-    # Highlight 영역 픽셀 좌표 (mask 내부, 원본 이미지 좌표)
-    # largest contour 내부를 채운 mask에서 좌표 추출
     fill_mask = np.zeros((crop_h, crop_w), dtype=np.uint8)
     cv2.drawContours(fill_mask, [largest], -1, 255, -1)
     hy, hx = np.where(fill_mask > 0)
-    highlight_pixels = np.stack([hx + x_min, hy + y_min], axis=-1)  # (N, 2) in (x, y)
+    highlight_pixels = np.stack([hx + x_min, hy + y_min], axis=-1)
 
     return (hcx, hcy), contour_points, highlight_pixels
 
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="Auto Photometry Calibration - Sphere 자동 검출 파이프라인"
-    )
-    parser.add_argument("--save_dir", type=str, default=None,
-                        help="Output directory for calibration results")
-    args, _ = parser.parse_known_args()
-    save_dir_arg = args.save_dir
+def run_auto_calibration(
+    image_pattern: str,
+    sphere_diameter: float,
+    pixel_resolution: float,
+    num_spheres_expected: int,
+    remap_dir: str,
+    save_base: str = './output_auto_calibration',
+    highlight_method: str = 'centroid',
+):
+    """Auto calibration 파이프라인 실행.
 
+    Parameters
+    ----------
+    image_pattern : str
+        이미지 디렉토리 또는 glob 패턴
+    sphere_diameter : float
+        Sphere 직경 (mm)
+    pixel_resolution : float
+        픽셀 해상도 (mm/px)
+    num_spheres_expected : int
+        기대하는 sphere 개수
+    remap_dir : str
+        Remap map 디렉토리 경로
+    save_base : str
+        결과 저장 기본 디렉토리
+    highlight_method : str
+        'centroid' 또는 'ring'
+    """
     print("=== Auto Photometry Calibration ===")
-
-    # 이미지 디렉토리 또는 패턴
-    image_pattern = input("Enter image directory or pattern (e.g. L2 or L2/*.bmp): ").strip()
-    if not image_pattern:
-        image_pattern = "./*.bmp"
-
-    # Sphere 직경
-    try:
-        sphere_diameter = float(input("Enter sphere diameter (mm): "))
-    except ValueError:
-        print("Invalid input. Using default 3.0mm.")
-        sphere_diameter = 3.0
-
-    # 픽셀 해상도
-    try:
-        pixel_resolution = float(input("Enter pixel resolution (mm/px): "))
-    except ValueError:
-        print("Invalid input. Using default 0.01mm/px.")
-        pixel_resolution = 0.01
-
-    # Sphere 개수
-    try:
-        num_spheres_expected = int(input("Enter expected number of spheres: "))
-        if num_spheres_expected < 1:
-            num_spheres_expected = 1
-    except ValueError:
-        num_spheres_expected = 1
-
-    # Highlight method 선택
-    method_input = input("Highlight position method? (Enter = centroid, 'ring' or 'r' = ring): ").strip().lower()
-    highlight_method = 'ring' if method_input in ('ring', 'r') else 'centroid'
-
-    # Remap 디렉토리 (필수)
-    remap_dir = input("Enter remap directory path: ").strip()
-    if not remap_dir:
-        print("Error: remap directory is required.")
-        sys.exit(1)
-    map_x, map_y = image_utils.load_map_pair(remap_dir)
-
-    # 저장 디렉토리
-    if save_dir_arg:
-        save_base = save_dir_arg.strip()
-    else:
-        save_base = input("Enter save directory (or press Enter for default): ").strip()
-    if not save_base:
-        save_base = './output_auto_calibration'
-
-    print(f"\nImage path: {image_pattern}")
+    print(f"Image path: {image_pattern}")
     print(f"Sphere diameter: {sphere_diameter} mm")
     print(f"Pixel resolution: {pixel_resolution} mm/px")
     print(f"Expected spheres: {num_spheres_expected}")
     print(f"Highlight method: {highlight_method}")
+
+    # Remap map 로드
+    map_x, map_y = image_utils.load_map_pair(remap_dir)
 
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     save_dir = os.path.join(save_base, timestamp)
@@ -446,17 +356,12 @@ def main():
     print(f"Save directory: {save_dir}")
 
     # Step 1: 이미지 로드
-    try:
-        image_paths, images = image_utils.load_images_grayscale(image_pattern)
-    except ValueError as e:
-        print(f"Error: {e}")
-        sys.exit(1)
+    image_paths, images = image_utils.load_images_grayscale(image_pattern)
 
     # Step 1.5: Rectification 적용
-    if map_x is not None and map_y is not None:
-        print("\nApplying rectification to images...")
-        images = image_utils.apply_rectification(images, map_x, map_y)
-        print(f"Rectification applied to {len(images)} images.")
+    print("\nApplying rectification to images...")
+    images = image_utils.apply_rectification(images, map_x, map_y)
+    print(f"Rectification applied to {len(images)} images.")
 
     # Step 2: 이미지 평균
     print("\n--- Step: 이미지 평균 ---")
@@ -474,7 +379,7 @@ def main():
 
     if spheres is None:
         print("\nCalibration 중단. Debug 이미지를 확인하고 파라미터를 조정하세요.")
-        sys.exit(1)
+        return None
 
     print("\n=== Sphere 검출 완료 ===")
     for i, s in enumerate(spheres):
@@ -487,11 +392,10 @@ def main():
     num_spheres = len(spheres)
     sphere_diameter_px = sphere_diameter / pixel_resolution
 
-    # 결과 저장: (num_lights * num_spheres) 순서 — [L0_S0, L0_S1, ..., L1_S0, ...]
-    all_centers = []         # sphere center (x, y)
-    all_highlights = []      # highlight region ((x1,y1),(x2,y2))
-    all_contours = []        # highlight contour or None
-    all_pixels = []          # highlight pixel 좌표 (N,2) or None
+    all_centers = []
+    all_highlights = []
+    all_contours = []
+    all_pixels = []
 
     for light_idx, img in enumerate(images):
         for sphere_idx, sphere in enumerate(spheres):
@@ -531,8 +435,8 @@ def main():
     print(f"Number of lights: {num_lights}, number of spheres: {num_spheres}")
     print(f"Sphere radius (px): {sphere_radius_px}")
 
-    # Step 6–11: KYCAL pipeline (light vector → JSON → debug)
-    lvcalc.run_kycal_pipeline(
+    # Step 6-11: KYCAL pipeline
+    result = lvcalc.run_kycal_pipeline(
         highlight_position_list, sphere_radius_px, save_dir,
         images_for_debug=images,
         all_centers=all_centers,
@@ -544,6 +448,4 @@ def main():
         all_highlight_centers=all_highlight_centers,
     )
 
-
-if __name__ == "__main__":
-    main()
+    return result

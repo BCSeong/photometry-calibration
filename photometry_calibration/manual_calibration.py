@@ -6,6 +6,7 @@ Simple Photometry Calibration with Matplotlib
 
 import os
 import json
+import datetime
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import Circle, Rectangle, Polygon
@@ -17,7 +18,7 @@ from scipy.ndimage import label, find_objects, binary_fill_holes
 from skimage.measure import find_contours
 import traceback
 import cv2
-import light_vec_calculator as lvcalc
+from . import light_vec_calculator as lvcalc
 
 
 class SimpleCalibrationMatplotlib:
@@ -75,12 +76,12 @@ class SimpleCalibrationMatplotlib:
     
     def load_remap_maps(self, map_dir: str):
         """remap map 파일들을 로드 (image_utils 위임)"""
-        import image_utils
+        from . import image_utils
         self.map_x, self.map_y = image_utils.load_map_pair(map_dir)
 
     def load_images(self, image_pattern: str, apply_rectification: bool = False) -> List[str]:
         """Load images by glob pattern or from directory. Optionally apply rectification."""
-        import image_utils
+        from . import image_utils
         image_paths = image_utils.collect_image_paths(image_pattern)
         if not image_paths:
             raise ValueError(f"Images not found: {image_pattern}")
@@ -756,65 +757,50 @@ class SimpleCalibrationMatplotlib:
 
 
 
-def main_single_sphere():
-    """Main entry: run photometry calibration with image pattern and optional save path."""
-    import argparse
-    parser = argparse.ArgumentParser(description="Simple Photometry Calibration (Matplotlib)")
-    parser.add_argument("--save_dir", type=str, default=None,
-                        help="Output directory for calibration results. If not set, will prompt interactively.")
-    args, _ = parser.parse_known_args()
-    save_dir_arg = args.save_dir
+def run_manual_calibration(
+    image_pattern: str,
+    sphere_diameter: float,
+    pixel_resolution: float,
+    num_spheres: int = 1,
+    auto_mode: bool = False,
+    highlight_method: str = 'centroid',
+    remap_dir: str = None,
+    save_base: str = './output_calibration_results',
+):
+    """Manual calibration 파이프라인 실행.
 
-    print("=== Simple Photometry Calibration (Matplotlib) ===")
-    
-    # Image directory or pattern input (folder alone => auto *.bmp, *.png)
-    image_pattern = input("Enter image directory or pattern (e.g. L2 or L2/*.bmp): ").strip()
-    if not image_pattern:
-        image_pattern = "L2"
-    
-    # 구슬 직경 입력
-    try:
-        sphere_diameter = float(input("Enter sphere diameter (mm): "))
-    except ValueError:
-        print("Invalid input. Using default 10.0mm.")
-        sphere_diameter = 3.0
-    
-    # 픽셀 해상도 입력
-    try:
-        pixel_resolution = float(input("Enter pixel resolution FROM CAMERA CALIBRATION OR STEREO CALIBRATION (mm/px): "))
-    except ValueError:
-        print("Invalid input. Using default 0.1mm/px.")
-        pixel_resolution = 0.01
-    
-    # 이미지 1장당 구(sphere) 개수 입력 (1 = single sphere, 2 이상 = 같은 이미지에서 구 여러 개 선택)
-    try:
-        num_spheres = int(input("Enter number of spheres per image (1 for single sphere): ").strip())
-        if num_spheres < 1:
-            num_spheres = 1
-    except ValueError:
-        num_spheres = 1
-    
-    # Highlight region selection mode
-    mode_input = input("Draw highlight region manually? (Enter = manual, 'auto' or 'a' = auto): ").strip().lower()
-    auto_mode = (mode_input == 'auto' or mode_input == 'a')
-    
-    if auto_mode:
-        print("Auto mode: Bright blob near the selected region will be detected automatically.")
-    else:
-        print("Manual mode: Draw the highlight region manually.")
+    Parameters
+    ----------
+    image_pattern : str
+        이미지 디렉토리 또는 glob 패턴
+    sphere_diameter : float
+        Sphere 직경 (mm)
+    pixel_resolution : float
+        픽셀 해상도 (mm/px)
+    num_spheres : int
+        이미지 1장당 구 개수
+    auto_mode : bool
+        True이면 highlight 자동 검출, False이면 수동 선택
+    highlight_method : str
+        'centroid' 또는 'ring'
+    remap_dir : str or None
+        Remap map 디렉토리 경로. None이면 rectification 미적용.
+    save_base : str
+        결과 저장 기본 디렉토리
+    """
 
-    # Highlight position method 선택
-    method_input = input("Highlight position method? (Enter = centroid, 'ring' or 'r' = ring): ").strip().lower()
-    highlight_method = 'ring' if method_input in ('ring', 'r') else 'centroid'
+    print("=== Manual Photometry Calibration (Matplotlib) ===")
+    print(f"Image path: {image_pattern}")
+    print(f"Sphere diameter: {sphere_diameter} mm")
+    print(f"Pixel resolution: {pixel_resolution} mm/px")
+    print(f"Num spheres: {num_spheres}")
+    print(f"Auto mode: {auto_mode}")
     print(f"Highlight method: {highlight_method}")
-    
-    # 캘리브레이션 객체 생성
+
     calib = SimpleCalibrationMatplotlib()
     calib.sphere_diameter = sphere_diameter
     calib.pixel_resolution = pixel_resolution
-    
-    # Remap 디렉토리 입력 (선택적)
-    remap_dir = input("Enter remap directory path (or press Enter to skip rectification): ").strip()
+
     apply_rectification = False
     if remap_dir:
         try:
@@ -823,20 +809,9 @@ def main_single_sphere():
             print("Rectification will be applied to all images.")
         except Exception as e:
             print(f"Warning: Failed to load remap maps: {e}")
-            print("Continuing without rectification...")
             apply_rectification = False
 
-    # Save directory: from CLI --save_dir, else interactive prompt
-    if save_dir_arg:
-        save_base = save_dir_arg.strip()
-    else:
-        save_base = input("Enter save directory (or press Enter for default): ").strip()
-    if not save_base:
-        save_base = './output_calibration_results'
     print(f"Save directory: {save_base}")
-    
-    # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-    # KYCAL pipeline
 
     # 0) 이미지 로드
     # 1) 각 이미지에서 구슬 중심과 하이라이트 영역 선택 (highlight 영역 수집만)
@@ -910,7 +885,6 @@ def main_single_sphere():
     print(f"Highlight method: {highlight_method}")
 
     # Result save path: save_base was set at start (CLI or interactive prompt)
-    import datetime
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     save_path = os.path.join(save_base, timestamp)
     os.makedirs(save_path, exist_ok=True)
@@ -955,5 +929,3 @@ def main_single_sphere():
         print("Rectified images saved successfully.")
 
 
-if __name__ == "__main__":
-    main_single_sphere()

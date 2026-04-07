@@ -1,7 +1,8 @@
 from typing import Any
 import numpy as np
 import json
-import debug_light_vectors as debug_vis
+from . import debug_light_vectors as debug_vis
+from . import debug_image_extraction as debug_img
 import os
 import datetime
 from dataclasses import dataclass
@@ -565,9 +566,6 @@ def run_kycal_pipeline(
     -------
     LightCalibrationResult
     """
-    import debug_light_vectors as debug_vis
-    import debug_image_extraction as debug_img
-
     # Step: compute light vectors
     light_dir = compute_light_vector_from_highlight_position(
         highlight_position_list, sphere_radius_px)

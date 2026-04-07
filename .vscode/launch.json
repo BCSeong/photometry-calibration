@@ -2,10 +2,20 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Python: manual_calibration_matplotlib",
+            "name": "Auto Calibration (interactive)",
             "type": "python",
             "request": "launch",
-            "program": "${workspaceFolder}/manual_calibration_matplotlib.py",
+            "program": "${workspaceFolder}/main.py",
+            "args": ["auto", "--interactive"],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "name": "Manual Calibration (interactive)",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/main.py",
+            "args": ["manual", "--interactive"],
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}"
         },
