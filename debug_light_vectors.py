@@ -8,8 +8,9 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 
 
-def _setup_3d_axes(ax):
-    """3D axes 기본 설정"""
+def _setup_3d_axes(ax, flip_z_for_view=True):
+    """3D axes 기본 설정. X=image height, Y=image width.
+    flip_z_for_view=True 이면 Z축을 반전해 +Z = 시선(카메라) 방향으로 표시 (조명이 카메라 쪽이면 위쪽에 보임)."""
     ax.set_xlim3d(-1, 1)
     ax.set_ylim3d(-1, 1)
     ax.set_zlim3d(-1, 1)
@@ -19,96 +20,83 @@ def _setup_3d_axes(ax):
     except AttributeError:
         pass
     
-    ax.set_xlabel('X')
-    ax.set_ylabel('Y')
-    ax.set_zlabel('Z')
+    ax.set_xlabel('X (image height)')
+    ax.set_ylabel('Y (image width)')
+    ax.set_zlabel('Z (view)' if flip_z_for_view else 'Z')
     ax.grid(True)
 
 
-def _draw_vectors(ax, light_dir, light_dir_deg=None):
-    """조명 벡터 그리기 - 각 점에 label 추가하고 (0,0,0)으로 향하는 벡터 그리기
+def _draw_vectors(ax, light_dir, light_dir_deg=None, flip_z_for_view=True):
+    """조명 벡터 그리기: light_dir = light→surface 단위벡터. 원점=surface, 점=조명 위치(-light_dir), 화살표=light→surface.
+    이미지 위쪽 highlight ↔ L은 X 음수 쪽. flip_z_for_view=True 이면 Z만 반전해 +Z=시선(카메라) 방향으로 그림.
     
-    Parameters
-    ----------
-    ax : matplotlib.axes.Axes
-        3D axes 객체
-    light_dir : ndarray of shape (N, 3)
-        조명 벡터 배열 [X, Y, Z]
-    light_dir_deg : list of dict, optional
-        각 조명의 구면 좌표 정보
-        [{'elevation_deg': float, 'azimuth_deg': float}, ...]
-        None이면 light_dir에서 계산
+    Photometry: 시선(카메라)=+Z, 표면=원점. 조명이 카메라 쪽(+Z)이면 light→surface는 -Z 방향이어야 함.
+    현재 파이프라인은 Z=-w(uvw)라 저장값은 조명이 카메라 쪽일 때 Z>0으로 나올 수 있음 → 디버그에서 Z 반전으로 보정.
     """
     colors = plt.cm.tab10(np.linspace(0, 1, len(light_dir)))
-    
-    # 각 조명 벡터 위치에 점 그리기
+    z_scale = -1.0 if flip_z_for_view else 1.0
+
     for i, ray in enumerate(light_dir):
         color = colors[i % len(colors)]
         x, y, z = ray[0], ray[1], ray[2]
-        
-        # 구면 좌표계 정보 가져오기 (light_dir_deg가 제공되면 사용, 아니면 계산)
+        px, py, pz = -x, -y, -z  # light position
+        r = np.sqrt(x**2 + y**2 + z**2)
+        if r < 1e-10:
+            r = 1.0
+
+        # 표시 좌표: Z만 반전하면 +Z = 시선 방향, 조명(카메라 쪽)이 위쪽에 옴
+        px_d, py_d, pz_d = px, py, pz * z_scale
+        x_d, y_d, z_d = x, y, z * z_scale
+
         if light_dir_deg is not None and i < len(light_dir_deg):
-            azimuth_deg = light_dir_deg[i]['azimuth_deg']
-            elevation_deg = light_dir_deg[i]['elevation_deg']
-            # 시각화를 위해 라디안으로 변환
+            d = light_dir_deg[i]
+            azimuth_deg = d.get('azimuth_deg', 0.0)
+            elevation_deg = d['elevation_deg']
             azimuth = np.radians(azimuth_deg)
             elevation = np.radians(elevation_deg)
+        else:
+            azimuth = np.arctan2(y, x)
+            elevation = np.arcsin(z / r)
+            azimuth_deg = (np.degrees(azimuth) + 360) % 360
+            elevation_deg = np.degrees(elevation)
 
-        # 1. 점 그리기
-        ax.scatter(x, y, z, color=color, s=100)
-        
-        # 2. Label과 각도 정보를 텍스트로 표시
-        # 라벨과 각도 정보를 하나의 텍스트박스로 병합
-        ax.text(x * 1.15, y * 1.15, z * 1.15, 
+        # 1. 점: 조명 위치 (Z 반전 적용)
+        ax.scatter(px_d, py_d, pz_d, color=color, s=100)
+
+        # 2. 라벨
+        ax.text(px_d * 1.15, py_d * 1.15, pz_d * 1.15,
                f'L{i+1}\nAz:{azimuth_deg:.1f}°\nEl:{elevation_deg:.1f}°',
                fontsize=10, color=color, alpha=0.9,
                bbox=dict(boxstyle='round,pad=0.4', facecolor='white', alpha=0.85, edgecolor=color, linewidth=0.5))
-        
-        # 3. 각 점에서 (0,0,0)으로 향하는 벡터 그리기
-        # 벡터 방향: (0,0,0) - ray = -ray
-        ax.quiver(x, y, z, 
-                 -x, -y, -z,
+
+        # 3. 화살표: light→surface (표시 좌표에서 원점으로)
+        ax.quiver(px_d, py_d, pz_d, x_d, y_d, z_d,
                  color=color, arrow_length_ratio=0.2, linewidth=2)
-        
-        # 4. Azimuth 각도 표시 (XY 평면에 투영한 원호)
-        # XY 평면에서 원점에서 벡터의 XY projection까지의 선
-        r = np.sqrt(x**2 + y**2 + z**2)
-        if np.sqrt(x**2 + y**2) > 1e-10:  # XY 평면에 투영이 있을 때만
-            # 원점에서 XY projection까지의 선 (얇은 점선)
-            ax.plot([0, x], [0, y], [0, 0], 
-                   color=color, linestyle='--', linewidth=0.8, alpha=0.6)
-            
-            # Azimuth 각도 원호 그리기 (XY 평면에서)
-            # 작은 반경의 원호로 각도 표시
-            arc_radius = r * 0.3  # 벡터 길이의 30%
+
+        # 4. Azimuth (XY 평면, Z=0)
+        xy_proj = np.sqrt(px**2 + py**2)
+        if xy_proj > 1e-10:
+            ax.plot([0, px_d], [0, py_d], [0, 0], color=color, linestyle='--', linewidth=0.8, alpha=0.6)
+            arc_radius = r * 0.3
             num_points = 20
-            arc_angles = np.linspace(0, azimuth, num_points)
+            az_plot = np.arctan2(py, px)
+            arc_angles = np.linspace(0, az_plot, num_points)
             arc_x = arc_radius * np.cos(arc_angles)
             arc_y = arc_radius * np.sin(arc_angles)
-            ax.plot(arc_x, arc_y, [0] * num_points,
-                   color=color, linestyle='--', linewidth=0.8, alpha=0.5)
-        
-        # 5. Elevation 각도 표시 (수직 평면에서)
-        # XY projection에서 점까지의 수직선과 원점에서 XY projection까지의 선 사이의 각도
-        xy_proj_len = np.sqrt(x**2 + y**2)
-        if xy_proj_len > 1e-10:
-            # 수직 평면에서 elevation 각도 원호 그리기
-            # 수직 평면은 XY projection 방향을 포함하는 평면
-            arc_radius_vert = r * 0.3  # 벡터 길이의 30%
+            ax.plot(arc_x, arc_y, [0] * num_points, color=color, linestyle='--', linewidth=0.8, alpha=0.5)
+
+        # 5. Elevation 원호 (표시 Z 반전 적용)
+        if xy_proj > 1e-10:
+            arc_radius_vert = r * 0.3
             num_points_vert = 20
-            elev_angles = np.linspace(0, elevation, num_points_vert)
-            
-            # 수직 평면에서의 좌표 (azimuth 방향으로 회전)
-            cos_az = x / xy_proj_len
-            sin_az = y / xy_proj_len
-            
-            # elevation 원호의 점들 (수직 평면에서)
+            elev_plot = np.arcsin(pz / r)
+            elev_angles = np.linspace(0, elev_plot, num_points_vert)
+            cos_az = px / xy_proj
+            sin_az = py / xy_proj
             arc_x_vert = arc_radius_vert * np.cos(elev_angles) * cos_az
             arc_y_vert = arc_radius_vert * np.cos(elev_angles) * sin_az
-            arc_z_vert = arc_radius_vert * np.sin(elev_angles)
-            
-            ax.plot(arc_x_vert, arc_y_vert, arc_z_vert,
-                   color=color, linestyle='--', linewidth=0.8, alpha=0.5)
+            arc_z_vert = arc_radius_vert * np.sin(elev_angles) * z_scale
+            ax.plot(arc_x_vert, arc_y_vert, arc_z_vert, color=color, linestyle='--', linewidth=0.8, alpha=0.5)
 
 
 def draw_light_vector(light_dir, view_azim=None, view_elev=None, title="Light Vectors", light_dir_deg=None):

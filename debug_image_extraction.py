@@ -11,17 +11,18 @@ from typing import List, Tuple, Optional, Union
 import os
 
 
-def save_extraction_debug_images(image_inputs: Union[List[str], List[np.ndarray]], 
+def save_extraction_debug_images(image_inputs: Union[List[str], List[np.ndarray]],
                                  sphere_centers: List[Tuple[int, int]],
                                  highlight_regions: List[Tuple[Tuple[int, int], Tuple[int, int]]],
                                  sphere_diameter_px: float,
                                  output_filename: str = "debug_extraction.png",
                                  highlight_contours: Optional[List[Optional[List[Tuple[int, int]]]]] = None,
                                  num_lights: Optional[int] = None,
-                                 num_spheres: Optional[int] = None):
+                                 num_spheres: Optional[int] = None,
+                                 highlight_centers: Optional[List[Optional[Tuple[float, float]]]] = None):
     """
     이미지 추출 결과를 디버그용으로 시각화하여 저장
-    
+
     Parameters
     ----------
     image_inputs : Union[List[str], List[np.ndarray]]
@@ -40,6 +41,8 @@ def save_extraction_debug_images(image_inputs: Union[List[str], List[np.ndarray]
         조명(이미지) 개수. None이면 1행 N열로만 배치.
     num_spheres : Optional[int]
         이미지당 구 개수. num_lights와 함께 주어지면 그리드: 행=num_spheres, 열=num_lights
+    highlight_centers : Optional[List[Optional[Tuple[float, float]]]]
+        각 항목의 highlight 중심 좌표 (x, y). 제공 시 bounding box 중점 대신 이 좌표를 사용.
     """
     n = len(sphere_centers)
     if n != len(highlight_regions):
@@ -59,13 +62,16 @@ def save_extraction_debug_images(image_inputs: Union[List[str], List[np.ndarray]
     
     if highlight_contours is None:
         highlight_contours = [None] * n
-    
+    if highlight_centers is None:
+        highlight_centers = [None] * n
+
     crop_size = int(sphere_diameter_px * 1.5)
     half_crop = crop_size // 2
-    
+
     cropped_images = []
-    
-    for img_input, center, highlight, contour in zip(image_list, sphere_centers, highlight_regions, highlight_contours):
+
+    for img_input, center, highlight, contour, hl_center in zip(
+            image_list, sphere_centers, highlight_regions, highlight_contours, highlight_centers):
         # 이미지 로드: 경로인지 배열인지 확인
         if isinstance(img_input, str):
             # 경로인 경우 파일에서 로드
@@ -106,9 +112,12 @@ def save_extraction_debug_images(image_inputs: Union[List[str], List[np.ndarray]
         highlight_start_rel = (highlight_start[0] - x_min, highlight_start[1] - y_min)
         highlight_end_rel = (highlight_end[0] - x_min, highlight_end[1] - y_min)
         
-        # Highlight center of mass 계산
-        highlight_center_x = (highlight_start[0] + highlight_end[0]) / 2
-        highlight_center_y = (highlight_start[1] + highlight_end[1]) / 2
+        # Highlight center 계산: 외부에서 전달된 값 우선, 없으면 bounding box 중점
+        if hl_center is not None:
+            highlight_center_x, highlight_center_y = hl_center
+        else:
+            highlight_center_x = (highlight_start[0] + highlight_end[0]) / 2
+            highlight_center_y = (highlight_start[1] + highlight_end[1]) / 2
         highlight_center_rel = (highlight_center_x - x_min, highlight_center_y - y_min)
         
         # matplotlib figure로 변환하여 그림 그리기
@@ -152,12 +161,10 @@ def save_extraction_debug_images(image_inputs: Union[List[str], List[np.ndarray]
         ax.set_ylim(cropped.shape[0], 0)
         ax.axis('off')  # 축 제거
         
-        # Figure를 numpy array로 변환
+        # Figure를 numpy array로 변환 (backend-safe)
         fig.canvas.draw()
-        # Renderer에서 buffer 가져오기
-        buf = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
-        w, h = fig.canvas.get_width_height()
-        buf = buf.reshape((h, w, 3))
+        buf = np.asarray(fig.canvas.buffer_rgba())
+        buf = buf[:, :, :3].copy()  # RGBA → RGB
         cropped_images.append(buf)
         
         plt.close(fig)

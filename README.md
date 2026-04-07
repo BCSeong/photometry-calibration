@@ -76,7 +76,6 @@ python simple_calibration_matplotlib.py
 
 - `ps_calib_L2SplitOnly_XYZ.json`: 캘리브레이션 결과 (JSON 형식)
   - `light_dir`: 조명 벡터 배열 (XYZ 좌표계)
-  - `light_matrix`: 조명 행렬 (photometric stereo 계산용)
   - `errors`: 각 조명에 대한 오차
   - `light_dir_spherical_coord`: 각 조명의 구면 좌표 (elevation_deg, azimuth_deg)
   - `backward`: XYZ_backward 좌표계의 조명 벡터 및 구면 좌표

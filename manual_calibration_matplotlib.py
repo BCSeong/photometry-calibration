@@ -6,7 +6,6 @@ Simple Photometry Calibration with Matplotlib
 
 import os
 import json
-import glob
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import Circle, Rectangle, Polygon
@@ -17,12 +16,8 @@ from scipy import ndimage
 from scipy.ndimage import label, find_objects, binary_fill_holes
 from skimage.measure import find_contours
 import traceback
-from pathlib import Path
 import cv2
-import tifffile as tiff
 import light_vec_calculator as lvcalc
-import debug_light_vectors as debug_vis
-import debug_image_extraction as debug_img
 
 
 class SimpleCalibrationMatplotlib:
@@ -36,7 +31,6 @@ class SimpleCalibrationMatplotlib:
         self.sphere_diameter = 0
         self.pixel_resolution = 0
         self.light_directions = []
-        self.light_matrix = None
         self.errors = 'single_sphere'
         
         # Rectification 관련
@@ -79,67 +73,34 @@ class SimpleCalibrationMatplotlib:
         except Exception as e:
             print(f"[DEBUG] STACK TRACE FAILED: {e}")
     
-    def _load_map_pair(self, map_dir: Path) -> Tuple[np.ndarray, np.ndarray]:
-        """map_dir에서 *map_x.tiff, *map_y.tiff 패턴으로 파일을 찾아 float32로 로드."""
-        mx_matches = sorted(map_dir.glob('*map_x.tiff'))
-        my_matches = sorted(map_dir.glob('*map_y.tiff'))
-        
-        if not mx_matches:
-            raise FileNotFoundError(f"Missing map_x file in {map_dir}: no file matching '*map_x.tiff'")
-        if not my_matches:
-            raise FileNotFoundError(f"Missing map_y file in {map_dir}: no file matching '*map_y.tiff'")
-        
-        mx_path = mx_matches[0]
-        my_path = my_matches[0]
-        
-        map_x = tiff.imread(str(mx_path)).astype(np.float32, copy=False)
-        map_y = tiff.imread(str(my_path)).astype(np.float32, copy=False)
-        if map_x.shape != map_y.shape:
-            raise ValueError(f"map_x and map_y shape mismatch: {map_x.shape} vs {map_y.shape}")
-        return map_x, map_y
-    
-    def _remap_image(self, src_img: np.ndarray, map_x: np.ndarray, map_y: np.ndarray, 
-                     interpolation: int = cv2.INTER_LINEAR, 
-                     border_mode: int = cv2.BORDER_CONSTANT, 
-                     border_value: float = 0.0) -> np.ndarray:
-        """cv2.remap을 사용해 src_img를 재배치. 채널 수/비트심도 보존."""
-        dst = cv2.remap(src_img, map_x, map_y, interpolation=interpolation, 
-                       borderMode=border_mode, borderValue=border_value)
-        return dst
-    
     def load_remap_maps(self, map_dir: str):
-        """remap map 파일들을 로드"""
-        map_dir_path = Path(map_dir)
-        self.map_x, self.map_y = self._load_map_pair(map_dir_path)
-        print(f"Remap maps loaded: size={self.map_x.shape[::-1]} (W,H)")
-    
+        """remap map 파일들을 로드 (image_utils 위임)"""
+        import image_utils
+        self.map_x, self.map_y = image_utils.load_map_pair(map_dir)
+
     def load_images(self, image_pattern: str, apply_rectification: bool = False) -> List[str]:
-        """glob 패턴으로 이미지들을 로드하고 선택적으로 rectification 적용"""
-        image_paths = sorted(glob.glob(image_pattern))
-        
+        """Load images by glob pattern or from directory. Optionally apply rectification."""
+        import image_utils
+        image_paths = image_utils.collect_image_paths(image_pattern)
         if not image_paths:
             raise ValueError(f"Images not found: {image_pattern}")
-        
+
         print(f"Loaded images: {len(image_paths)}")
         self.images = image_paths
         self.rectified_images = []
-        
-        # Rectification 적용
+
         if apply_rectification:
             if self.map_x is None or self.map_y is None:
                 raise ValueError("Remap maps not loaded. Call load_remap_maps() first.")
-            
+
             print("Applying rectification to images...")
             for i, image_path in enumerate(image_paths):
-                # 이미지 로드
                 pil_image = Image.open(image_path)
                 img_array = np.array(pil_image)
-                
-                # Rectification 적용
-                rectified = self._remap_image(img_array, self.map_x, self.map_y)
+                rectified = image_utils.remap_image(img_array, self.map_x, self.map_y)
                 self.rectified_images.append(rectified)
                 print(f"  Rectified image {i+1}/{len(image_paths)}: {os.path.basename(image_path)}")
-        
+
         return image_paths
     
     def on_click(self, event):
@@ -154,6 +115,7 @@ class SimpleCalibrationMatplotlib:
             self.reset_view()
             return
             
+        # matplotlib 이미지 좌표: (x, y) = (xdata, ydata). ndarray/cv2 접근 시 img[y, x] 사용.
         x, y = int(event.xdata), int(event.ydata)
         
         if self.temp_center is None:
@@ -789,29 +751,26 @@ class SimpleCalibrationMatplotlib:
         
         self.light_directions = lvcalc.convert_image_coordinate_to_XYZ_coordinate(self.light_directions)
 
-        """Light matrix 구축"""
         if len(self.light_directions) == 0:
             raise ValueError("Light directions not set")
-        
-        self.light_matrix = self.light_directions.T
-        print(f"Light matrix shape: {self.light_matrix.shape}")
 
-    def save_json_result(self, filename: str = "calibration_result.json", LightCalibrationResult: lvcalc.LightCalibrationResult = None):
-        """JSON 형식으로 결과 저장 (light_vec_calculator 사용)"""
-        if LightCalibrationResult is None:
-            raise ValueError("LightCalibrationResult not set")
-
-        return lvcalc.save_calibration_json(LightCalibrationResult, output_filename=filename)
 
 
 def main_single_sphere():
-    """메인 함수"""
+    """Main entry: run photometry calibration with image pattern and optional save path."""
+    import argparse
+    parser = argparse.ArgumentParser(description="Simple Photometry Calibration (Matplotlib)")
+    parser.add_argument("--save_dir", type=str, default=None,
+                        help="Output directory for calibration results. If not set, will prompt interactively.")
+    args, _ = parser.parse_known_args()
+    save_dir_arg = args.save_dir
+
     print("=== Simple Photometry Calibration (Matplotlib) ===")
     
-    # 이미지 패턴 입력
-    image_pattern = input("Enter image pattern (e.g., L2/*.bmp): ").strip()
+    # Image directory or pattern input (folder alone => auto *.bmp, *.png)
+    image_pattern = input("Enter image directory or pattern (e.g. L2 or L2/*.bmp): ").strip()
     if not image_pattern:
-        image_pattern = "L2/*.bmp"
+        image_pattern = "L2"
     
     # 구슬 직경 입력
     try:
@@ -835,14 +794,19 @@ def main_single_sphere():
     except ValueError:
         num_spheres = 1
     
-    # Highlight 영역 선택 모드 선택
-    mode_input = input("Highlight 영역을 직접 그리시겠습니까? (Yes or auto)) ").strip().lower()
+    # Highlight region selection mode
+    mode_input = input("Draw highlight region manually? (Enter = manual, 'auto' or 'a' = auto): ").strip().lower()
     auto_mode = (mode_input == 'auto' or mode_input == 'a')
     
     if auto_mode:
-        print("Auto mode: Highlight 영역 근처의 밝은 blob을 자동으로 추출합니다.")
+        print("Auto mode: Bright blob near the selected region will be detected automatically.")
     else:
-        print("Manual mode: Highlight 영역을 직접 그립니다.")
+        print("Manual mode: Draw the highlight region manually.")
+
+    # Highlight position method 선택
+    method_input = input("Highlight position method? (Enter = centroid, 'ring' or 'r' = ring): ").strip().lower()
+    highlight_method = 'ring' if method_input in ('ring', 'r') else 'centroid'
+    print(f"Highlight method: {highlight_method}")
     
     # 캘리브레이션 객체 생성
     calib = SimpleCalibrationMatplotlib()
@@ -861,6 +825,15 @@ def main_single_sphere():
             print(f"Warning: Failed to load remap maps: {e}")
             print("Continuing without rectification...")
             apply_rectification = False
+
+    # Save directory: from CLI --save_dir, else interactive prompt
+    if save_dir_arg:
+        save_base = save_dir_arg.strip()
+    else:
+        save_base = input("Enter save directory (or press Enter for default): ").strip()
+    if not save_base:
+        save_base = './output_calibration_results'
+    print(f"Save directory: {save_base}")
     
     # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
     # KYCAL pipeline
@@ -923,169 +896,63 @@ def main_single_sphere():
         return
     sphere_radius_px = (sphere_diameter / pixel_resolution) / 2.0
     
-    # highlight_position 리스트 구성: (center, highlight) 쌍을 구 중심 기준 (u,v)로 변환 후, 조명별로 num_spheres개씩 묶음
-    highlight_position_list = []
-    for light_idx in range(num_lights):
-        spheres_uv = []
-        for s in range(num_spheres):
-            i = light_idx * num_spheres + s
-            center = calib.sphere_centers[i]
-            highlight = calib.highlight_regions[i]
-            start_point, end_point = highlight
-            highlight_center = ((start_point[0] + end_point[0]) / 2,
-                               (start_point[1] + end_point[1]) / 2)
-            u = highlight_center[0] - center[0]  # x (horizontal) = u (→, East)
-            v = highlight_center[1] - center[1]  # y (vertical) = v (↓, South)
-            spheres_uv.append((u, v))
-        highlight_position_list.append(spheres_uv)
-    
-    # (number of lights, number of spheres, 2) 형태
-    highlight_position = highlight_position_list
+    # highlight_position 리스트 구성: 공용 함수 사용
+    highlight_position_list, all_highlight_centers = lvcalc.build_highlight_position_list(
+        highlight_method=highlight_method,
+        all_centers=calib.sphere_centers,
+        all_highlights=calib.highlight_regions,
+        all_pixels_or_contours=calib.highlight_contours,
+        num_lights=num_lights,
+        num_spheres=num_spheres,
+    )
     print(f"Number of lights: {num_lights}, number of spheres: {num_spheres}")
     print(f"Sphere radius (px): {sphere_radius_px}")
-    
-    # step 2: compute light vectors from highlight positions
-    light_dir = lvcalc.compute_light_vector_from_highlight_position(highlight_position, sphere_radius_px)  # (num_lights, 1, uvw)
-    print(f"Light direction shape (before averaging): {light_dir.shape}") # (num_lights, number of spheres, uvw)
+    print(f"Highlight method: {highlight_method}")
 
-    # step 3: calculate error btw multiple spheres (num_spheres>=2일 때 의미 있음)
-    error = lvcalc.compute_error(light_dir)  # (num_lights, number of spheres, XYZ)
-    good_bad = lvcalc.compute_good_bad(error)  # boolean (True if good, False if bad)
-    if not good_bad:
-        print("Error: Bad light vectors")
-        return
-    
-    # step 4: average light vectors (구 차원으로 평균)
-    light_dir_avg = lvcalc.average_light_vector(light_dir)  # return result is (num_lights, uvw)
-    print(f"Light direction shape (after averaging): {light_dir_avg.shape}")
-    
-    # step 5: convert uvw coordinate to XYZ coordinate
-    light_dir_XYZ = lvcalc.convert_image_coordinate_to_XYZ_coordinate(light_dir_avg)  # (num_lights, XYZ)
-    light_matrix_XYZ = light_dir_XYZ.T  # (3, num_lights)
-
-    # step 6: convert XYZ to XYZ_backward
-    light_dir_XYZ_backward = lvcalc.convert_XYZ_to_XYZ_backward(light_dir_XYZ)  # (num_lights, XYZ)
-    light_matrix_XYZ_backward = light_dir_XYZ_backward.T  # (3, num_lights)
-    
-    # step 7: convert XYZ to spherical coordinate
-    light_dir_spherical_list = lvcalc.convert_XYZ_to_spherical_coordinate(light_dir_XYZ)
-    light_dir_spherical_list_backward = lvcalc.convert_XYZ_to_spherical_coordinate(light_dir_XYZ_backward)
-
-    
-    # light_dir_spherical_coord를 dict 형태로 변환 (L1, L2, ... 형식)
-    light_dir_spherical_coord = {}
-    light_dir_spherical_coord_backward = {}
-    for i, spherical_info in enumerate(light_dir_spherical_list):
-        light_name = f'L{i+1}'
-        light_dir_spherical_coord[light_name] = spherical_info
-    for i, spherical_info_backward in enumerate(light_dir_spherical_list_backward):
-        light_name = f'L{i+1}'
-        light_dir_spherical_coord_backward[light_name] = spherical_info_backward
-    
-    # step 8: save json and debug results
-    forward = {
-        'light_dir': light_dir_XYZ,
-        'light_matrix': light_matrix_XYZ,
-        'light_dir_spherical_coord': light_dir_spherical_list
-    }
-    
-    backward = {
-        'light_dir': light_dir_XYZ_backward,
-        'light_matrix': light_matrix_XYZ_backward,
-        'light_dir_spherical_coord': light_dir_spherical_list_backward
-    }
-
-
-    light_calibration_result = lvcalc.LightCalibrationResult(
-        forward=forward,
-        errors=error,
-        backward=backward,
-        version="0.0.0-1"
-    )
-    
-    print(f"Light directions (XYZ): {light_dir_XYZ}")
-    print(f"Light directions (spherical): {light_dir_spherical_coord}")
-    
-    # 결과 저장
+    # Result save path: save_base was set at start (CLI or interactive prompt)
     import datetime
-    now = datetime.datetime.now()
-    timestamp = now.strftime("%Y%m%d_%H%M%S")
-    save_path = './output_calibration_results/' + timestamp
-    if not os.path.exists(save_path):
-        os.makedirs(save_path)
-    
-    ps_calib_name = save_path + '/ps_calib_L2SplitOnly_XYZ.json'
-    debug_vector_name = save_path + '/debug_vector.png'
-    debug_extraction_name = save_path + '/debug_extraction.png'
-    if not os.path.exists(save_path):
-        os.makedirs(save_path)
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    save_path = os.path.join(save_base, timestamp)
+    os.makedirs(save_path, exist_ok=True)
 
-    calib.save_json_result(ps_calib_name, LightCalibrationResult=light_calibration_result)
-    
-    print("\n=== Calibration Completed ===")
-    print(f"Selected sphere centers: {calib.sphere_centers}")
-    print(f"Selected highlight regions: {calib.highlight_regions}")
+    # KYCAL pipeline: light vector 계산 → 좌표 변환 → JSON/debug 저장
+    sphere_diameter_px = calib.sphere_diameter / calib.pixel_resolution
+    images_for_debug = calib.rectified_images if len(calib.rectified_images) > 0 else calib.images
 
-    # Debugging: Save light vectors in multiple viewpoints
-    debug_vis.save_light_vector_views(light_dir_XYZ, output_prefix=debug_vector_name, 
-                                      light_dir_deg=light_dir_spherical_list)
-    
-    # Debugging: Save extraction debug images (그리드: num_spheres 행 × num_lights 열)
-    if len(calib.images) > 0 and len(calib.sphere_centers) > 0:
-        sphere_diameter_px = calib.sphere_diameter / calib.pixel_resolution
-        images_for_debug = calib.rectified_images if len(calib.rectified_images) > 0 else calib.images
-        if len(calib.rectified_images) > 0:
-            print("Using rectified images for debug_extraction.png")
-        else:
-            print("Using original images for debug_extraction.png")
-        debug_img.save_extraction_debug_images(
-            images_for_debug,
-            calib.sphere_centers,
-            calib.highlight_regions,
-            sphere_diameter_px,
-            debug_extraction_name,
-            highlight_contours=calib.highlight_contours,
-            num_lights=num_lights,
-            num_spheres=num_spheres,
-        )
-    
-    # Debugging: Save rectified images
+    lvcalc.run_kycal_pipeline(
+        highlight_position_list=highlight_position_list,
+        sphere_radius_px=sphere_radius_px,
+        save_dir=save_path,
+        images_for_debug=images_for_debug,
+        all_centers=calib.sphere_centers,
+        all_highlights=calib.highlight_regions,
+        all_contours=calib.highlight_contours,
+        sphere_diameter_px=sphere_diameter_px,
+        num_lights=num_lights,
+        num_spheres=num_spheres,
+        all_highlight_centers=all_highlight_centers,
+    )
+
+    # Rectified images 저장
     if len(calib.rectified_images) > 0:
-        rectified_dir = save_path + '/rectified_images'
-        if not os.path.exists(rectified_dir):
-            os.makedirs(rectified_dir)
-        
+        rectified_dir = os.path.join(save_path, 'rectified_images')
+        os.makedirs(rectified_dir, exist_ok=True)
         print(f"\nSaving {len(calib.rectified_images)} rectified images to {rectified_dir}...")
         for i, rectified_img in enumerate(calib.rectified_images):
             image_name = os.path.basename(calib.images[i])
             image_stem = os.path.splitext(image_name)[0]
             rectified_path = os.path.join(rectified_dir, f"rectified_{image_stem}.bmp")
-            
-            # 이미지 형식 변환 (cv2.imwrite를 위해)
             img_to_save = rectified_img.copy()
-            
-            # float 형식이면 uint8로 변환
             if img_to_save.dtype != np.uint8:
-                if img_to_save.dtype == np.float32 or img_to_save.dtype == np.float64:
-                    # 0-1 범위면 0-255로 스케일링, 아니면 클리핑
-                    if img_to_save.max() <= 1.0:
-                        img_to_save = (img_to_save * 255).astype(np.uint8)
-                    else:
-                        img_to_save = np.clip(img_to_save, 0, 255).astype(np.uint8)
+                if img_to_save.max() <= 1.0:
+                    img_to_save = (img_to_save * 255).astype(np.uint8)
                 else:
-                    # 다른 형식은 uint8로 변환 시도
                     img_to_save = np.clip(img_to_save, 0, 255).astype(np.uint8)
-            
-            # RGB -> BGR 변환 (3채널인 경우)
             if len(img_to_save.shape) == 3 and img_to_save.shape[2] == 3:
                 img_to_save = cv2.cvtColor(img_to_save, cv2.COLOR_RGB2BGR)
-            
             cv2.imwrite(rectified_path, img_to_save)
             print(f"  Saved: {rectified_path}")
         print("Rectified images saved successfully.")
-
-    # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-    # KYCAL pipeline end
 
 
 if __name__ == "__main__":
