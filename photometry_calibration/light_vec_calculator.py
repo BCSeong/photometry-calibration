@@ -3,6 +3,7 @@ import numpy as np
 import json
 from . import debug_light_vectors as debug_vis
 from . import debug_image_extraction as debug_img
+from . import camera_model
 import os
 import datetime
 from dataclasses import dataclass
@@ -146,8 +147,21 @@ def compute_highlight_uv_ring(
     return (u, v)
 
 
+def _sphere_radius_for(radius_px, sphere_idx: int) -> float:
+    """radius_px may be one value for every sphere, or one per sphere."""
+    if np.isscalar(radius_px):
+        return float(radius_px)
+    return float(np.asarray(radius_px).ravel()[sphere_idx])
+
+
 # step 1
-def compute_light_vector_from_highlight_position(highlight_position: list[list[tuple[float, float]]], radius_px: float):
+def compute_light_vector_from_highlight_position(
+    highlight_position: list[list[tuple[float, float]]],
+    radius_px,
+    camera: "camera_model.CameraModel" = None,
+    sphere_centers: list = None,
+    sphere_radius_mm: float = None,
+):
     """
     여러 각도의 하이라이트 오프셋으로부터 조명 벡터 행렬 생성.
     Orthographic camera 가정.
@@ -168,47 +182,57 @@ def compute_light_vector_from_highlight_position(highlight_position: list[list[t
     ---------
     highlight_position: list[list[tuple[float, float]]]
         list of highlight positions for each sphere, shape (number of lights, number of spheres, (u,v))
-    radius_px: float
-        radius of the sphere in pixels
+    radius_px: float or sequence
+        radius of the sphere in pixels. Pass one value per sphere to use the
+        radius measured on each sphere (auto-radius) instead of the nominal one.
+    camera: CameraModel, optional
+        When given together with `sphere_centers` and `sphere_radius_mm`, the
+        exact perspective model is used instead of the linear-magnification
+        (orthographic) one. See photometry_calibration.camera_model.
+    sphere_centers: list[tuple[float, float]], optional
+        absolute sphere centres in the image, one per sphere. Required for the
+        exact model, which needs the field position to get the ray tilt right.
+    sphere_radius_mm: float, optional
+        physical sphere radius [mm]. Required for the exact model.
 
     Output:
     ---------
     light_dir: ndarray of shape (number of lights, number of spheres, uvw)
         light vector [Lu, Lv, Lw] (uvw coordinate)
-        
-    Parameters
-    ----------
-    offset_px : float
-        구 중심으로부터 하이라이트까지의 거리 (px)
-    radius_px : float
-        구의 반경 (px)
-    highlight_position : list[tuple[float, float]]
-        하이라이트 위치 리스트 (u, v)
-
-
     """
-
-    # 
     highlight_position_numLight_numSphere_uv = highlight_position.copy()
-    
-    # Viewing vector
+
+    use_exact = (camera is not None and sphere_centers is not None
+                 and sphere_radius_mm is not None)
+
+    # Viewing vector (orthographic path only)
     V = np.array([0.0, 0.0, 1.0]) # image to observer
-    
+
     light_dir = []
     for highlight_position_numSphere_uv in highlight_position_numLight_numSphere_uv:
         light_dir_numSphere = []
-        for uv in highlight_position_numSphere_uv:
+        for sphere_idx, uv in enumerate(highlight_position_numSphere_uv):
             u, v = uv
+            R = _sphere_radius_for(radius_px, sphere_idx)
 
-            w = np.sqrt(radius_px**2 - u**2 - v**2)
+            L = None
+            if use_exact:
+                L = camera_model.compute_light_vector_exact(
+                    u, v, sphere_centers[sphere_idx], R, camera, sphere_radius_mm)
+                if L is None:
+                    print(f"  [경고] sphere {sphere_idx}: 광선이 구를 빗나감, "
+                          f"선형 배율 가정으로 대체")
 
-            # 표면 법선 (단위 벡터)
-            N = np.array([u / radius_px, v / radius_px, w / radius_px])
-            N /= np.linalg.norm(N)
+            if L is None:
+                w = np.sqrt(max(R**2 - u**2 - v**2, 0.0))
 
-            # 반사 법칙으로 조명 벡터 계산
-            L = V - 2 * np.dot(N, V) * N # light -> sphere surface 
-            L /= np.linalg.norm(L)
+                # 표면 법선 (단위 벡터)
+                N = np.array([u / R, v / R, w / R])
+                N /= np.linalg.norm(N)
+
+                # 반사 법칙으로 조명 벡터 계산
+                L = V - 2 * np.dot(N, V) * N # light -> sphere surface
+                L /= np.linalg.norm(L)
 
             light_dir_numSphere.append(L)
         light_dir.append(np.array(light_dir_numSphere))
@@ -557,10 +581,20 @@ def run_kycal_pipeline(
     num_spheres: int,
     all_highlight_centers: list = None,
     version: str = "0.0.0-1",
+    camera: "camera_model.CameraModel" = None,
+    sphere_centers: list = None,
+    sphere_radius_mm: float = None,
 ) -> LightCalibrationResult:
     """KYCAL 파이프라인 오케스트레이터.
 
     highlight_position_list → light vector 계산 → 좌표 변환 → JSON 저장 → debug 이미지 저장
+
+    Parameters
+    ----------
+    sphere_radius_px : float or sequence
+        하나의 값(nominal) 또는 sphere 별 측정 반경(auto-radius)
+    camera, sphere_centers, sphere_radius_mm
+        세 값이 모두 주어지면 선형 배율 가정 대신 정확 투영 모델을 사용
 
     Returns
     -------
@@ -568,7 +602,9 @@ def run_kycal_pipeline(
     """
     # Step: compute light vectors
     light_dir = compute_light_vector_from_highlight_position(
-        highlight_position_list, sphere_radius_px)
+        highlight_position_list, sphere_radius_px,
+        camera=camera, sphere_centers=sphere_centers,
+        sphere_radius_mm=sphere_radius_mm)
     print(f"Light direction shape (before averaging): {light_dir.shape}")
 
     # Step: error

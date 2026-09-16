@@ -11,6 +11,7 @@ from typing import List, Tuple, Optional
 
 from . import image_utils
 from . import light_vec_calculator as lvcalc
+from . import camera_model
 
 
 def compute_average_image(images: List[np.ndarray]) -> np.ndarray:
@@ -320,6 +321,8 @@ def run_auto_calibration(
     remap_dir: str,
     save_base: str = './output_auto_calibration',
     highlight_method: str = 'centroid',
+    auto_radius: bool = False,
+    exact_projection: bool = False,
 ):
     """Auto calibration 파이프라인 실행.
 
@@ -339,6 +342,15 @@ def run_auto_calibration(
         결과 저장 기본 디렉토리
     highlight_method : str
         'centroid' 또는 'ring'
+    auto_radius : bool
+        True 면 검출된 sphere 실루엣 반경을 사용. False (기본) 면
+        sphere_diameter / pixel_resolution 으로 계산한 nominal 반경을 사용.
+        초점면이 sphere 적도면에 있지 않으면 겉보기 반경이 nominal 과 달라지며,
+        그 차이가 반사 법칙의 2배 증폭을 거쳐 elevation 오차가 된다.
+    exact_projection : bool
+        True 면 선형 배율 가정(구면 전체 동일 배율, V=(0,0,1)) 대신
+        정확한 원근 투영 모델을 사용. remap_dir 의 카메라 캘리브레이션에서
+        초점거리와 주점을 읽어야 하므로, 없으면 자동으로 꺼진다.
     """
     print("=== Auto Photometry Calibration ===")
     print(f"Image path: {image_pattern}")
@@ -346,9 +358,20 @@ def run_auto_calibration(
     print(f"Pixel resolution: {pixel_resolution} mm/px")
     print(f"Expected spheres: {num_spheres_expected}")
     print(f"Highlight method: {highlight_method}")
+    print(f"Auto radius: {auto_radius}")
+    print(f"Exact projection: {exact_projection}")
 
     # Remap map 로드
     map_x, map_y = image_utils.load_map_pair(remap_dir)
+
+    camera = None
+    if exact_projection:
+        camera = camera_model.load_camera_model(remap_dir)
+        if camera is None:
+            print("[경고] remap_dir 에서 카메라 모델(CameraFocalLength/CameraCenterX/Y)을 "
+                  "찾지 못했습니다. 선형 배율 가정으로 진행합니다.")
+        else:
+            print(f"Camera model: {camera}")
 
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     save_dir = os.path.join(save_base, timestamp)
@@ -426,14 +449,23 @@ def run_auto_calibration(
 
     # Step 5: highlight position → (u, v) 변환
     print(f"\n--- Step: Light vector 계산 (method={highlight_method}) ---")
-    sphere_radius_px = sphere_diameter_px / 2.0
+    nominal_radius_px = sphere_diameter_px / 2.0
+    sphere_centers = [s['center'] for s in spheres]
+
+    if auto_radius:
+        sphere_radius_px = [s['radius'] for s in spheres]
+        print(f"Sphere radius (px): auto-measured "
+              f"{[f'{r:.2f}' for r in sphere_radius_px]} "
+              f"(nominal {nominal_radius_px:.2f})")
+    else:
+        sphere_radius_px = nominal_radius_px
+        print(f"Sphere radius (px): {sphere_radius_px} (nominal)")
 
     highlight_position_list, all_highlight_centers = lvcalc.build_highlight_position_list(
         highlight_method, all_centers, all_highlights, all_pixels,
         num_lights, num_spheres)
 
     print(f"Number of lights: {num_lights}, number of spheres: {num_spheres}")
-    print(f"Sphere radius (px): {sphere_radius_px}")
 
     # Step 6-11: KYCAL pipeline
     result = lvcalc.run_kycal_pipeline(
@@ -446,6 +478,9 @@ def run_auto_calibration(
         num_lights=num_lights,
         num_spheres=num_spheres,
         all_highlight_centers=all_highlight_centers,
+        camera=camera,
+        sphere_centers=sphere_centers if camera else None,
+        sphere_radius_mm=sphere_diameter / 2.0 if camera else None,
     )
 
     return result

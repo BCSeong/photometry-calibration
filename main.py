@@ -29,6 +29,14 @@ def _prompt_if_missing(value, prompt_text, type_fn=str, default=None):
         raise
 
 
+def _prompt_flag(value, prompt_text):
+    """--flag 가 주어지면 그대로, 아니면 interactive 로 물어본다."""
+    if value:
+        return True
+    raw = input(prompt_text).strip().lower()
+    return raw in ('y', 'yes', '1', 'true', 'on')
+
+
 def cmd_auto(args):
     """Auto calibration 서브커맨드."""
     from photometry_calibration.auto_calibration import run_auto_calibration
@@ -61,6 +69,14 @@ def cmd_auto(args):
             args.save_dir,
             "Enter save directory (or press Enter for default): ",
             default='./output_auto_calibration')
+        auto_radius = _prompt_flag(
+            args.auto_radius,
+            "Use auto-measured sphere radius instead of nominal? "
+            "(y/N): ")
+        exact_projection = _prompt_flag(
+            args.exact_projection,
+            "Use exact projection instead of the linear-magnification "
+            "assumption? (y/N): ")
     else:
         image_pattern = args.image_pattern
         sphere_diameter = args.sphere_diameter
@@ -69,6 +85,8 @@ def cmd_auto(args):
         remap_dir = args.remap_dir
         highlight_method = args.highlight_method or 'centroid'
         save_dir = args.save_dir or './output_auto_calibration'
+        auto_radius = args.auto_radius
+        exact_projection = args.exact_projection
 
         # CLI 모드에서 필수 인자 검증
         missing = []
@@ -101,6 +119,8 @@ def cmd_auto(args):
         remap_dir=remap_dir,
         save_base=save_dir,
         highlight_method=highlight_method,
+        auto_radius=auto_radius,
+        exact_projection=exact_projection,
     )
 
 
@@ -142,6 +162,10 @@ def cmd_manual(args):
             args.save_dir,
             "Enter save directory (or press Enter for default): ",
             default='./output_calibration_results')
+        exact_projection = _prompt_flag(
+            args.exact_projection,
+            "Use exact projection instead of the linear-magnification "
+            "assumption? (y/N): ")
     else:
         image_pattern = args.image_pattern
         sphere_diameter = args.sphere_diameter
@@ -151,6 +175,7 @@ def cmd_manual(args):
         highlight_method = args.highlight_method or 'centroid'
         remap_dir = args.remap_dir
         save_dir = args.save_dir or './output_calibration_results'
+        exact_projection = args.exact_projection
 
         missing = []
         if not image_pattern:
@@ -179,6 +204,7 @@ def cmd_manual(args):
         highlight_method=highlight_method,
         remap_dir=remap_dir,
         save_base=save_dir,
+        exact_projection=exact_projection,
     )
 
 
@@ -190,6 +216,7 @@ def main():
 Examples:
   python main.py auto --interactive
   python main.py auto --image_pattern L2 --sphere_diameter 4.0 --pixel_resolution 0.01 --num_spheres 7 --remap_dir ./remap
+  python main.py auto --image_pattern L2 ... --auto_radius --exact_projection
   python main.py manual --interactive
         """,
     )
@@ -214,6 +241,12 @@ Examples:
                              help="Highlight position method (default: centroid)")
     auto_parser.add_argument("--save_dir", type=str, default=None,
                              help="Output directory for results")
+    auto_parser.add_argument("--auto_radius", action="store_true",
+                             help="Use the measured sphere silhouette radius instead of "
+                                  "sphere_diameter/pixel_resolution (default: nominal)")
+    auto_parser.add_argument("--exact_projection", action="store_true",
+                             help="Drop the linear-magnification assumption and trace the "
+                                  "real camera ray (needs camera model in --remap_dir)")
     auto_parser.set_defaults(func=cmd_auto)
 
     # --- manual subcommand ---
@@ -237,6 +270,9 @@ Examples:
                                help="Remap map directory path (optional)")
     manual_parser.add_argument("--save_dir", type=str, default=None,
                                help="Output directory for results")
+    manual_parser.add_argument("--exact_projection", action="store_true",
+                               help="Drop the linear-magnification assumption and trace the "
+                                    "real camera ray (needs camera model in --remap_dir)")
     manual_parser.set_defaults(func=cmd_manual)
 
     args = parser.parse_args()

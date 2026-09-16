@@ -7,3 +7,5 @@ output*
 example*
 legacy*
 *.zip
+# analysis/report artefacts (figures, one-off scripts)
+report/

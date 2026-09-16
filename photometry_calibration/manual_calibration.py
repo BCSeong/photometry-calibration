@@ -19,6 +19,7 @@ from skimage.measure import find_contours
 import traceback
 import cv2
 from . import light_vec_calculator as lvcalc
+from . import camera_model
 
 
 class SimpleCalibrationMatplotlib:
@@ -766,6 +767,7 @@ def run_manual_calibration(
     highlight_method: str = 'centroid',
     remap_dir: str = None,
     save_base: str = './output_calibration_results',
+    exact_projection: bool = False,
 ):
     """Manual calibration 파이프라인 실행.
 
@@ -787,6 +789,10 @@ def run_manual_calibration(
         Remap map 디렉토리 경로. None이면 rectification 미적용.
     save_base : str
         결과 저장 기본 디렉토리
+    exact_projection : bool
+        True 면 선형 배율 가정(구면 전체 동일 배율, V=(0,0,1)) 대신 정확한
+        원근 투영 모델을 사용. remap_dir 의 카메라 캘리브레이션에서 초점거리와
+        주점을 읽어야 하므로, remap_dir 이 없거나 값이 없으면 자동으로 꺼진다.
     """
 
     print("=== Manual Photometry Calibration (Matplotlib) ===")
@@ -796,6 +802,16 @@ def run_manual_calibration(
     print(f"Num spheres: {num_spheres}")
     print(f"Auto mode: {auto_mode}")
     print(f"Highlight method: {highlight_method}")
+    print(f"Exact projection: {exact_projection}")
+
+    camera = None
+    if exact_projection:
+        camera = camera_model.load_camera_model(remap_dir)
+        if camera is None:
+            print("[경고] remap_dir 에서 카메라 모델을 찾지 못했습니다. "
+                  "선형 배율 가정으로 진행합니다.")
+        else:
+            print(f"Camera model: {camera}")
 
     calib = SimpleCalibrationMatplotlib()
     calib.sphere_diameter = sphere_diameter
@@ -905,6 +921,9 @@ def run_manual_calibration(
         num_lights=num_lights,
         num_spheres=num_spheres,
         all_highlight_centers=all_highlight_centers,
+        camera=camera,
+        sphere_centers=calib.sphere_centers[:num_spheres] if camera else None,
+        sphere_radius_mm=sphere_diameter / 2.0 if camera else None,
     )
 
     # Rectified images 저장
