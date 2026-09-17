@@ -29,11 +29,13 @@ def _prompt_if_missing(value, prompt_text, type_fn=str, default=None):
         raise
 
 
-def _prompt_flag(value, prompt_text):
-    """--flag 가 주어지면 그대로, 아니면 interactive 로 물어본다."""
-    if value:
-        return True
+def _prompt_flag(value, prompt_text, default=True):
+    """--no_xxx 로 끈 경우는 그대로 두고, 아니면 interactive 로 물어본다."""
+    if value is False:
+        return False
     raw = input(prompt_text).strip().lower()
+    if not raw:
+        return default
     return raw in ('y', 'yes', '1', 'true', 'on')
 
 
@@ -70,13 +72,16 @@ def cmd_auto(args):
             "Enter save directory (or press Enter for default): ",
             default='./output_auto_calibration')
         auto_radius = _prompt_flag(
-            args.auto_radius,
-            "Use auto-measured sphere radius instead of nominal? "
-            "(y/N): ")
+            not args.no_auto_radius and not args.legacy,
+            "Use the measured sphere radius instead of nominal? (Y/n): ")
         exact_projection = _prompt_flag(
-            args.exact_projection,
+            not args.no_exact_projection and not args.legacy,
             "Use exact projection instead of the linear-magnification "
-            "assumption? (y/N): ")
+            "assumption? (Y/n): ")
+        radius_estimator = 'legacy' if (args.legacy_radius or args.legacy) else _prompt_if_missing(
+            None,
+            "Sphere edge estimator? (Enter = robust, 'legacy' = pre-fix behaviour): ",
+            default='robust')
     else:
         image_pattern = args.image_pattern
         sphere_diameter = args.sphere_diameter
@@ -85,8 +90,9 @@ def cmd_auto(args):
         remap_dir = args.remap_dir
         highlight_method = args.highlight_method or 'centroid'
         save_dir = args.save_dir or './output_auto_calibration'
-        auto_radius = args.auto_radius
-        exact_projection = args.exact_projection
+        auto_radius = not (args.no_auto_radius or args.legacy)
+        exact_projection = not (args.no_exact_projection or args.legacy)
+        radius_estimator = 'legacy' if (args.legacy_radius or args.legacy) else 'robust'
 
         # CLI 모드에서 필수 인자 검증
         missing = []
@@ -121,6 +127,7 @@ def cmd_auto(args):
         highlight_method=highlight_method,
         auto_radius=auto_radius,
         exact_projection=exact_projection,
+        radius_estimator=('legacy' if radius_estimator == 'legacy' else 'robust'),
     )
 
 
@@ -163,9 +170,9 @@ def cmd_manual(args):
             "Enter save directory (or press Enter for default): ",
             default='./output_calibration_results')
         exact_projection = _prompt_flag(
-            args.exact_projection,
+            not args.no_exact_projection and not args.legacy,
             "Use exact projection instead of the linear-magnification "
-            "assumption? (y/N): ")
+            "assumption? (Y/n): ")
     else:
         image_pattern = args.image_pattern
         sphere_diameter = args.sphere_diameter
@@ -175,7 +182,7 @@ def cmd_manual(args):
         highlight_method = args.highlight_method or 'centroid'
         remap_dir = args.remap_dir
         save_dir = args.save_dir or './output_calibration_results'
-        exact_projection = args.exact_projection
+        exact_projection = not (args.no_exact_projection or args.legacy)
 
         missing = []
         if not image_pattern:
@@ -216,7 +223,8 @@ def main():
 Examples:
   python main.py auto --interactive
   python main.py auto --image_pattern L2 --sphere_diameter 4.0 --pixel_resolution 0.01 --num_spheres 7 --remap_dir ./remap
-  python main.py auto --image_pattern L2 ... --auto_radius --exact_projection
+  python main.py auto --image_pattern L2 ...            # improved path (default)
+  python main.py auto --image_pattern L2 ... --legacy   # original pipeline, for comparison
   python main.py manual --interactive
         """,
     )
@@ -241,12 +249,18 @@ Examples:
                              help="Highlight position method (default: centroid)")
     auto_parser.add_argument("--save_dir", type=str, default=None,
                              help="Output directory for results")
-    auto_parser.add_argument("--auto_radius", action="store_true",
-                             help="Use the measured sphere silhouette radius instead of "
-                                  "sphere_diameter/pixel_resolution (default: nominal)")
-    auto_parser.add_argument("--exact_projection", action="store_true",
-                             help="Drop the linear-magnification assumption and trace the "
-                                  "real camera ray (needs camera model in --remap_dir)")
+    auto_parser.add_argument("--no_auto_radius", action="store_true",
+                             help="Use nominal sphere_diameter/pixel_resolution instead of the "
+                                  "measured silhouette radius (pre-2026-09-16 behaviour)")
+    auto_parser.add_argument("--no_exact_projection", action="store_true",
+                             help="Keep the linear-magnification assumption, i.e. uniform "
+                                  "magnification over the sphere and V=(0,0,1) everywhere")
+    auto_parser.add_argument("--legacy_radius", action="store_true",
+                             help="Use the pre-fix sphere edge estimator (nearest sampling, "
+                                  "forward difference, fitEllipse). Reads ~3 px low")
+    auto_parser.add_argument("--legacy", action="store_true",
+                             help="Reproduce the original pipeline: implies --no_auto_radius "
+                                  "--no_exact_projection --legacy_radius")
     auto_parser.set_defaults(func=cmd_auto)
 
     # --- manual subcommand ---
@@ -270,9 +284,12 @@ Examples:
                                help="Remap map directory path (optional)")
     manual_parser.add_argument("--save_dir", type=str, default=None,
                                help="Output directory for results")
-    manual_parser.add_argument("--exact_projection", action="store_true",
-                               help="Drop the linear-magnification assumption and trace the "
-                                    "real camera ray (needs camera model in --remap_dir)")
+    manual_parser.add_argument("--no_exact_projection", action="store_true",
+                               help="Keep the linear-magnification assumption (pre-2026-09-16 "
+                                    "behaviour)")
+    manual_parser.add_argument("--legacy", action="store_true",
+                               help="Reproduce the original pipeline: implies "
+                                    "--no_exact_projection")
     manual_parser.set_defaults(func=cmd_manual)
 
     args = parser.parse_args()

@@ -63,6 +63,47 @@ def _detect_blob_centers(
     return inverted, keypoints
 
 
+def _find_outer_radius_radial_legacy(
+    avg_image: np.ndarray,
+    cx: float, cy: float,
+    sphere_radius_px: float,
+    num_angles: int = 360,
+) -> Tuple[np.ndarray, float]:
+    """개선 전 edge 탐색. 비교용으로만 남겨둔다 (radius_estimator='legacy').
+
+    최근접 샘플링 + 전진차분 + 탐색창 경계 피크 허용. 실측 기준 2.7~4.6 px
+    낮게 나온다.
+    """
+    h, w = avg_image.shape[:2]
+    img_float = avg_image.astype(np.float64)
+
+    r_min = sphere_radius_px * 0.9
+    r_max = sphere_radius_px * 1.1
+    num_samples = max(int(r_max - r_min), 50)
+    radii = np.linspace(r_min, r_max, num_samples)
+
+    angles = np.linspace(0, 2 * np.pi, num_angles, endpoint=False)
+    edge_points = []
+
+    for angle in angles:
+        cos_a, sin_a = np.cos(angle), np.sin(angle)
+        profile = np.zeros(len(radii))
+        for j, r in enumerate(radii):
+            ix, iy = int(round(cx + r * cos_a)), int(round(cy + r * sin_a))
+            if 0 <= ix < w and 0 <= iy < h:
+                profile[j] = img_float[iy, ix]
+
+        grad_abs = np.abs(np.diff(profile))
+        if len(grad_abs) == 0:
+            continue
+        peak_r = radii[int(np.argmax(grad_abs))]
+        edge_points.append((cx + peak_r * cos_a, cy + peak_r * sin_a))
+
+    edge_points = np.array(edge_points)
+    distances = np.hypot(edge_points[:, 0] - cx, edge_points[:, 1] - cy)
+    return edge_points, float(np.median(distances))
+
+
 def _find_outer_radius_radial(
     avg_image: np.ndarray,
     cx: float, cy: float,
@@ -176,12 +217,17 @@ def find_spheres(
     pixel_resolution_mm_per_px: float,
     num_spheres_expected: int,
     debug_dir: str,
+    radius_estimator: str = 'robust',
 ) -> Optional[List[dict]]:
     """하이브리드 방식으로 sphere의 외경을 검출.
 
     Step 1: SimpleBlobDetector로 검정 중심 위치 확보
     Step 2: 중심에서 방사형 gradient profile → 외경 edge point 탐색
     Step 3: edge point에 타원 fit → contour 생성
+
+    radius_estimator:
+        'robust' (기본) 서브픽셀 edge 탐색 + robust 원 fit
+        'legacy'        개선 전 동작 (최근접 샘플링, 전진차분, fitEllipse)
 
     Returns:
         검출된 sphere 정보 리스트 또는 개수 불일치 시 None
@@ -223,20 +269,25 @@ def find_spheres(
         cx, cy = kp.pt
         print(f"\n  Sphere [{i}] 외경 탐색 (center=({cx:.1f}, {cy:.1f}))...")
 
-        edge_points, median_radius = _find_outer_radius_radial(
-            avg_image, cx, cy, sphere_radius_px
-        )
+        finder = (_find_outer_radius_radial_legacy if radius_estimator == 'legacy'
+                  else _find_outer_radius_radial)
+        edge_points, median_radius = finder(avg_image, cx, cy, sphere_radius_px)
 
         if len(edge_points) < 5:
             print(f"    [경고] edge point 부족 ({len(edge_points)}개), 건너뜀")
             continue
 
         ellipse, contour = _fit_ellipse_contour(edge_points)
-        ecx, ecy, avg_radius, n_kept, resid = _fit_circle_robust(edge_points, cx, cy)
-
-        print(f"    외경 원: center=({ecx:.2f}, {ecy:.2f}), 반경={avg_radius:.2f}px "
-              f"(기대: {sphere_radius_px:.2f}px)")
-        print(f"    edge point {n_kept}/{len(edge_points)} 사용, 잔차 {resid:.2f}px")
+        if radius_estimator == 'legacy':
+            (ecx, ecy), (major, minor), _ = ellipse
+            avg_radius = (major + minor) / 4.0
+            print(f"    외경 타원(legacy): center=({ecx:.2f}, {ecy:.2f}), "
+                  f"반경={avg_radius:.2f}px (기대: {sphere_radius_px:.2f}px)")
+        else:
+            ecx, ecy, avg_radius, n_kept, resid = _fit_circle_robust(edge_points, cx, cy)
+            print(f"    외경 원: center=({ecx:.2f}, {ecy:.2f}), 반경={avg_radius:.2f}px "
+                  f"(기대: {sphere_radius_px:.2f}px)")
+            print(f"    edge point {n_kept}/{len(edge_points)} 사용, 잔차 {resid:.2f}px")
 
         candidates.append({
             'center': (ecx, ecy),
@@ -361,8 +412,9 @@ def run_auto_calibration(
     remap_dir: str,
     save_base: str = './output_auto_calibration',
     highlight_method: str = 'centroid',
-    auto_radius: bool = False,
-    exact_projection: bool = False,
+    auto_radius: bool = True,
+    exact_projection: bool = True,
+    radius_estimator: str = 'robust',
 ):
     """Auto calibration 파이프라인 실행.
 
@@ -382,13 +434,16 @@ def run_auto_calibration(
         결과 저장 기본 디렉토리
     highlight_method : str
         'centroid' 또는 'ring'
+    radius_estimator : str
+        'robust' (기본) 또는 'legacy'. legacy 는 개선 전 edge 탐색/타원 fit 으로,
+        실측 기준 반경이 2.7~4.6 px 낮게 나온다. 비교용.
     auto_radius : bool
-        True 면 검출된 sphere 실루엣 반경을 사용. False (기본) 면
+        True (기본) 면 검출된 sphere 실루엣 반경을 사용. False 면
         sphere_diameter / pixel_resolution 으로 계산한 nominal 반경을 사용.
         초점면이 sphere 적도면에 있지 않으면 겉보기 반경이 nominal 과 달라지며,
         그 차이가 반사 법칙의 2배 증폭을 거쳐 elevation 오차가 된다.
     exact_projection : bool
-        True 면 선형 배율 가정(구면 전체 동일 배율, V=(0,0,1)) 대신
+        True (기본) 면 선형 배율 가정(구면 전체 동일 배율, V=(0,0,1)) 대신
         정확한 원근 투영 모델을 사용. remap_dir 의 카메라 캘리브레이션에서
         초점거리와 주점을 읽어야 하므로, 없으면 자동으로 꺼진다.
     """
@@ -400,6 +455,7 @@ def run_auto_calibration(
     print(f"Highlight method: {highlight_method}")
     print(f"Auto radius: {auto_radius}")
     print(f"Exact projection: {exact_projection}")
+    print(f"Radius estimator: {radius_estimator}")
 
     # Remap map 로드
     map_x, map_y = image_utils.load_map_pair(remap_dir)
@@ -438,6 +494,7 @@ def run_auto_calibration(
         pixel_resolution_mm_per_px=pixel_resolution,
         num_spheres_expected=num_spheres_expected,
         debug_dir=save_dir,
+        radius_estimator=radius_estimator,
     )
 
     if spheres is None:

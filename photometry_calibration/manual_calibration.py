@@ -767,7 +767,7 @@ def run_manual_calibration(
     highlight_method: str = 'centroid',
     remap_dir: str = None,
     save_base: str = './output_calibration_results',
-    exact_projection: bool = False,
+    exact_projection: bool = True,
 ):
     """Manual calibration 파이프라인 실행.
 
@@ -790,7 +790,7 @@ def run_manual_calibration(
     save_base : str
         결과 저장 기본 디렉토리
     exact_projection : bool
-        True 면 선형 배율 가정(구면 전체 동일 배율, V=(0,0,1)) 대신 정확한
+        True (기본) 면 선형 배율 가정(구면 전체 동일 배율, V=(0,0,1)) 대신 정확한
         원근 투영 모델을 사용. remap_dir 의 카메라 캘리브레이션에서 초점거리와
         주점을 읽어야 하므로, remap_dir 이 없거나 값이 없으면 자동으로 꺼진다.
     """
