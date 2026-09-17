@@ -69,46 +69,89 @@ def _find_outer_radius_radial(
     sphere_radius_px: float,
     num_angles: int = 360,
 ) -> Tuple[np.ndarray, float]:
-    """Step 2: 중심에서 방사형 gradient profile로 외경 edge point를 탐색."""
-    h, w = avg_image.shape[:2]
-    img_float = avg_image.astype(np.float64)
+    """Step 2: 중심에서 방사형 gradient profile로 외경 edge point를 탐색.
 
+    반경은 r/R 을 통해 elevation 으로 2배 증폭되어 들어가고, 실루엣에서 역산한
+    sphere 중심거리에도 쓰이므로 (합쳐서 약 0.6 deg/px) 서브픽셀 정확도가 필요하다.
+
+    - 방사 프로파일을 이중선형 보간으로 샘플링 (최근접 샘플링은 격자에 스냅된다)
+    - 중심차분으로 gradient 계산. 전진차분(np.diff)은 피크를 반 샘플 안쪽으로
+      민다 (0.82 px 간격에서 -0.41 px).
+    - gradient 피크를 포물선 보간으로 서브픽셀 정밀화
+    """
     r_min = sphere_radius_px * 0.9
     r_max = sphere_radius_px * 1.1
-    num_samples = max(int(r_max - r_min), 50)
-    radii = np.linspace(r_min, r_max, num_samples)
-
+    step = 0.25
+    radii = np.arange(r_min, r_max, step, dtype=np.float32)
     angles = np.linspace(0, 2 * np.pi, num_angles, endpoint=False)
-    edge_points = []
 
-    for angle in angles:
-        cos_a = np.cos(angle)
-        sin_a = np.sin(angle)
+    map_x = (cx + np.outer(radii, np.cos(angles))).astype(np.float32)
+    map_y = (cy + np.outer(radii, np.sin(angles))).astype(np.float32)
+    profile = cv2.remap(avg_image.astype(np.float32), map_x, map_y,
+                        cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
 
-        profile = np.zeros(len(radii))
-        for j, r in enumerate(radii):
-            x = cx + r * cos_a
-            y = cy + r * sin_a
-            ix, iy = int(round(x)), int(round(y))
-            if 0 <= ix < w and 0 <= iy < h:
-                profile[j] = img_float[iy, ix]
+    grad = np.abs(np.gradient(profile, step, axis=0))
+    k = np.argmax(grad, axis=0)
 
-        grad_abs = np.abs(np.diff(profile))
-        if len(grad_abs) == 0:
-            continue
+    # 포물선 서브픽셀 보간 (경계 샘플은 보정 없이 사용)
+    ok = (k > 0) & (k < len(radii) - 1)
+    idx = np.arange(len(angles))
+    gm = grad[np.clip(k - 1, 0, None), idx]
+    g0 = grad[k, idx]
+    gp = grad[np.clip(k + 1, None, len(radii) - 1), idx]
+    denom = gm - 2.0 * g0 + gp
+    shift = np.where(np.abs(denom) > 1e-9, 0.5 * (gm - gp) / np.where(denom == 0, 1, denom), 0.0)
+    shift = np.clip(np.where(ok, shift, 0.0), -1.0, 1.0)
+    peak_r = radii[k] + shift * step
 
-        local_peak = np.argmax(grad_abs)
-        peak_r = radii[local_peak]
+    # 탐색창 경계에 붙은 피크는 실제 limb 가 아니다. 그림자 쪽처럼 limb 대비가
+    # 약한 방위각에서는 창 끝의 약한 gradient 가 이기며, 이것이 반경을 크게
+    # 끌어내린다 (h=0 에서 360 중 82 개가 그랬다).
+    valid = (peak_r > r_min + 1.0) & (peak_r < r_max - 1.0)
+    if valid.sum() >= 16:
+        angles, peak_r = angles[valid], peak_r[valid]
 
-        ex = cx + peak_r * cos_a
-        ey = cy + peak_r * sin_a
-        edge_points.append((ex, ey))
+    edge_points = np.column_stack([cx + peak_r * np.cos(angles),
+                                   cy + peak_r * np.sin(angles)])
+    return edge_points, float(np.median(peak_r))
 
-    edge_points = np.array(edge_points)
-    distances = np.sqrt((edge_points[:, 0] - cx)**2 + (edge_points[:, 1] - cy)**2)
-    median_radius = float(np.median(distances))
 
-    return edge_points, median_radius
+def _fit_circle_robust(edge_points: np.ndarray, cx: float, cy: float,
+                       n_iter: int = 6, sigma: float = 2.5):
+    """Edge point 에 원을 robust fit 하여 중심과 반경을 구한다.
+
+    중심이 (dx, dy) 만큼 어긋나 있으면 반경이 r(theta) = R + dx*cos + dy*sin 로
+    나타나므로, 이 형태를 이상치 제거와 함께 최소제곱으로 푼다.
+
+    cv2.fitEllipse 는 대수적(conic) fit 이라 edge point 가 흩어지면 작은 쪽으로
+    편향된다. 그림자에 오염된 방위각이 있으면 특히 심하다.
+    """
+    dx = edge_points[:, 0] - cx
+    dy = edge_points[:, 1] - cy
+    r = np.hypot(dx, dy)
+    th = np.arctan2(dy, dx)
+    C, S = np.cos(th), np.sin(th)
+
+    # MAD 로 초기 이상치를 걸러낸 뒤 최소제곱에 들어간다. 최소제곱으로 시작하면
+    # 이상치가 20% 만 있어도 표준편차가 부풀어 제거 문턱이 무력해진다.
+    med = float(np.median(r))
+    mad = float(np.median(np.abs(r - med))) * 1.4826
+    keep = np.abs(r - med) < max(4.0 * mad, 1.5) if mad > 1e-9 else np.ones(r.size, bool)
+    if keep.sum() < 16:
+        keep = np.ones(r.size, bool)
+
+    sol = np.array([med, 0.0, 0.0])
+    res = r - med
+    for _ in range(n_iter):
+        A = np.column_stack([np.ones(keep.sum()), C[keep], S[keep]])
+        sol, *_ = np.linalg.lstsq(A, r[keep], rcond=None)
+        res = r - (sol[0] + sol[1] * C + sol[2] * S)
+        s = np.std(res[keep])
+        new = np.abs(res) < sigma * s if s > 1e-9 else keep
+        if new.sum() < 16 or (new == keep).all():
+            break
+        keep = new
+    return cx + sol[1], cy + sol[2], float(sol[0]), int(keep.sum()), float(np.std(res[keep]))
 
 
 def _fit_ellipse_contour(edge_points: np.ndarray) -> Tuple[tuple, np.ndarray]:
@@ -189,14 +232,11 @@ def find_spheres(
             continue
 
         ellipse, contour = _fit_ellipse_contour(edge_points)
-        ecx, ecy = ellipse[0]
-        major, minor = ellipse[1]
-        angle = ellipse[2]
-        avg_radius = (major + minor) / 4.0
+        ecx, ecy, avg_radius, n_kept, resid = _fit_circle_robust(edge_points, cx, cy)
 
-        print(f"    외경 타원: center=({ecx:.1f}, {ecy:.1f}), "
-              f"axes=({major:.1f}, {minor:.1f}), angle={angle:.1f}")
-        print(f"    평균 반경: {avg_radius:.1f}px (기대: {sphere_radius_px:.1f}px)")
+        print(f"    외경 원: center=({ecx:.2f}, {ecy:.2f}), 반경={avg_radius:.2f}px "
+              f"(기대: {sphere_radius_px:.2f}px)")
+        print(f"    edge point {n_kept}/{len(edge_points)} 사용, 잔차 {resid:.2f}px")
 
         candidates.append({
             'center': (ecx, ecy),
