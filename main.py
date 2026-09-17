@@ -88,6 +88,10 @@ def cmd_auto(args):
             "  (Enter = skip. This is an optical hardware parameter; prefer fixing\n"
             "   the target so the sphere equator sits on the focal plane): ",
             type_fn=float, default=None)
+        triangulate = args.triangulate_source or _prompt_flag(
+            None,
+            "Locate the light source by intersecting rays from all spheres?\n"
+            "  (needs 3+ spheres, no extra input) (y/N): ", default=False)
     else:
         image_pattern = args.image_pattern
         sphere_diameter = args.sphere_diameter
@@ -100,6 +104,7 @@ def cmd_auto(args):
         exact_projection = not (args.no_exact_projection or args.legacy)
         radius_estimator = 'legacy' if (args.legacy_radius or args.legacy) else 'robust'
         led_distance = None if args.legacy else args.led_distance
+        triangulate = bool(args.triangulate_source) and not args.legacy
 
         # CLI 모드에서 필수 인자 검증
         missing = []
@@ -136,6 +141,7 @@ def cmd_auto(args):
         exact_projection=exact_projection,
         radius_estimator=('legacy' if radius_estimator == 'legacy' else 'robust'),
         led_distance_mm=led_distance,
+        triangulate_source=triangulate,
     )
 
 
@@ -273,6 +279,11 @@ Examples:
                                   "focal plane. Off by default: it puts an optical hardware "
                                   "parameter into the algorithm. Fixing the target and defining "
                                   "the expected value offline achieves the same thing")
+    auto_parser.add_argument("--triangulate_source", action="store_true",
+                             help="Intersect the rays from all spheres to locate the light "
+                                  "source, then report the direction at the FoV centre. Needs "
+                                  "3+ spheres and no extra input, unlike --led_distance. Takes "
+                                  "precedence over it")
     auto_parser.add_argument("--legacy", action="store_true",
                              help="Reproduce the original pipeline: implies --no_auto_radius "
                                   "--no_exact_projection --legacy_radius")

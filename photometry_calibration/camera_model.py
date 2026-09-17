@@ -136,6 +136,68 @@ def refer_to_fov_centre(
     return -d / n
 
 
+def triangulate_source(points, directions) -> Optional[np.ndarray]:
+    """Where the light source sits, from several reflection points at once.
+
+    Each sphere gives a direction to the source from a known 3D point, so three
+    or more spheres fix the source by least-squares ray intersection.  That
+    removes the need to be told the LED distance: the target itself carries the
+    baseline.
+
+    Less accurate than a good measured distance -- the source position comes
+    out long by roughly 20 mm on the 7-sphere target -- but the direction it
+    implies at the FoV centre is still within a few tenths of a degree, because
+    distance only enters through the parallax term.
+
+    Parameters
+    ----------
+    points : reflection points in camera coordinates [mm]
+    directions : light directions there (source -> surface), unit
+
+    Returns
+    -------
+    source position [mm], or None when the rays are degenerate.
+    """
+    A = np.zeros((3, 3))
+    b = np.zeros(3)
+    n = 0
+    for P, L in zip(points, directions):
+        if P is None or L is None:
+            continue
+        d = -np.asarray(L, float)
+        nrm = np.linalg.norm(d)
+        if nrm < 1e-9:
+            continue
+        d /= nrm
+        M = np.eye(3) - np.outer(d, d)      # projector onto the plane normal to d
+        A += M
+        b += M @ np.asarray(P, float)
+        n += 1
+    if n < 3:
+        return None
+    try:
+        return np.linalg.solve(A, b)
+    except np.linalg.LinAlgError:
+        return None
+
+
+def source_direction_at(source_pos: np.ndarray, target_point: np.ndarray) -> np.ndarray:
+    """Light direction (source -> surface) seen at a given 3D point."""
+    v = np.asarray(target_point, float) - np.asarray(source_pos, float)
+    return v / np.linalg.norm(v)
+
+
+def ray_residual(source_pos, points, directions) -> float:
+    """Mean distance from the fitted source to each ray -- how well they agree."""
+    r = []
+    for P, L in zip(points, directions):
+        if P is None or L is None:
+            continue
+        d = -np.asarray(L, float); d /= np.linalg.norm(d)
+        r.append(float(np.linalg.norm(np.cross(np.asarray(source_pos, float) - P, d))))
+    return float(np.mean(r)) if r else float('nan')
+
+
 def compute_light_vector_exact(
     u: float,
     v: float,

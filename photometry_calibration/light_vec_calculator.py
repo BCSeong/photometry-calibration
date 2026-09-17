@@ -163,6 +163,7 @@ def compute_light_vector_from_highlight_position(
     sphere_radius_mm: float = None,
     led_distance_mm: float = None,
     focal_plane_distance_mm: float = None,
+    triangulate_source: bool = False,
 ):
     """
     여러 각도의 하이라이트 오프셋으로부터 조명 벡터 행렬 생성.
@@ -201,6 +202,11 @@ def compute_light_vector_from_highlight_position(
         is referred from the reflection point on the sphere to the FoV centre
         on the focal plane. Needs the LED-to-specimen distance, an optical
         hardware parameter; off unless explicitly requested.
+    triangulate_source: bool
+        Locate the light source by intersecting the rays from all spheres, then
+        report the direction it implies at the FoV centre. Needs three or more
+        spheres and no extra input, since the target supplies the baseline.
+        Takes precedence over led_distance_mm.
 
     Output:
     ---------
@@ -211,8 +217,15 @@ def compute_light_vector_from_highlight_position(
 
     use_exact = (camera is not None and sphere_centers is not None
                  and sphere_radius_mm is not None)
-    use_ref = (use_exact and led_distance_mm is not None
+    use_tri = (use_exact and triangulate_source
+               and focal_plane_distance_mm is not None
+               and len(highlight_position[0]) >= 3)
+    use_ref = (use_exact and not use_tri and led_distance_mm is not None
                and focal_plane_distance_mm is not None)
+    if triangulate_source and not use_tri:
+        print("  [경고] 광원 삼각측량에는 정확 투영과 sphere 3개 이상이 필요합니다. 건너뜁니다.")
+    origin = (np.array([0.0, 0.0, -float(focal_plane_distance_mm)])
+              if focal_plane_distance_mm is not None else None)
 
     # Viewing vector (orthographic path only)
     V = np.array([0.0, 0.0, 1.0]) # image to observer
@@ -220,6 +233,7 @@ def compute_light_vector_from_highlight_position(
     light_dir = []
     for highlight_position_numSphere_uv in highlight_position_numLight_numSphere_uv:
         light_dir_numSphere = []
+        pts, dirs = [], []
         for sphere_idx, uv in enumerate(highlight_position_numSphere_uv):
             u, v = uv
             R = _sphere_radius_for(radius_px, sphere_idx)
@@ -253,6 +267,19 @@ def compute_light_vector_from_highlight_position(
                 L /= np.linalg.norm(L)
 
             light_dir_numSphere.append(L)
+            if use_tri:
+                pts.append(P); dirs.append(L)
+
+        if use_tri:
+            src = camera_model.triangulate_source(pts, dirs)
+            if src is None:
+                print("  [경고] 광원 삼각측량 실패, sphere 별 값을 그대로 사용합니다.")
+            else:
+                Lc = camera_model.source_direction_at(src, origin)
+                resid = camera_model.ray_residual(src, pts, dirs)
+                print(f"  광원 삼각측량: 위치 {np.round(src, 2)} mm, "
+                      f"FoV 중심까지 {np.linalg.norm(src - origin):.2f} mm, 잔차 {resid:.2f} mm")
+                light_dir_numSphere = [Lc] * len(light_dir_numSphere)
         light_dir.append(np.array(light_dir_numSphere))
     light_dir = np.array(light_dir) # (number of lights, number of spheres, uvw)
 
@@ -604,6 +631,7 @@ def run_kycal_pipeline(
     sphere_radius_mm: float = None,
     led_distance_mm: float = None,
     focal_plane_distance_mm: float = None,
+    triangulate_source: bool = False,
 ) -> LightCalibrationResult:
     """KYCAL 파이프라인 오케스트레이터.
 
@@ -626,7 +654,8 @@ def run_kycal_pipeline(
         camera=camera, sphere_centers=sphere_centers,
         sphere_radius_mm=sphere_radius_mm,
         led_distance_mm=led_distance_mm,
-        focal_plane_distance_mm=focal_plane_distance_mm)
+        focal_plane_distance_mm=focal_plane_distance_mm,
+        triangulate_source=triangulate_source)
     print(f"Light direction shape (before averaging): {light_dir.shape}")
 
     # Step: error
