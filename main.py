@@ -65,8 +65,8 @@ def cmd_auto(args):
             "Enter remap directory path: ")
         highlight_method = _prompt_if_missing(
             args.highlight_method,
-            "Highlight position method? (Enter = centroid, 'ring' or 'r' = ring): ",
-            default='centroid')
+            "Highlight position method? (Enter = ring, 'centroid' or 'c' = centroid): ",
+            default='ring')
         save_dir = _prompt_if_missing(
             args.save_dir,
             "Enter save directory (or press Enter for default): ",
@@ -88,7 +88,7 @@ def cmd_auto(args):
         pixel_resolution = args.pixel_resolution
         num_spheres = args.num_spheres
         remap_dir = args.remap_dir
-        highlight_method = args.highlight_method or 'centroid'
+        highlight_method = args.highlight_method or 'ring'
         save_dir = args.save_dir or './output_auto_calibration'
         auto_radius = not (args.no_auto_radius or args.legacy)
         exact_projection = not (args.no_exact_projection or args.legacy)
@@ -160,8 +160,8 @@ def cmd_manual(args):
 
         highlight_method = _prompt_if_missing(
             args.highlight_method,
-            "Highlight position method? (Enter = centroid, 'ring' or 'r' = ring): ",
-            default='centroid')
+            "Highlight position method? (Enter = ring, 'centroid' or 'c' = centroid): ",
+            default='ring')
         remap_dir = _prompt_if_missing(
             args.remap_dir,
             "Enter remap directory path (or press Enter to skip): ")
@@ -179,7 +179,7 @@ def cmd_manual(args):
         pixel_resolution = args.pixel_resolution
         num_spheres = args.num_spheres or 1
         auto_mode = args.auto_highlight or False
-        highlight_method = args.highlight_method or 'centroid'
+        highlight_method = args.highlight_method or 'ring'
         remap_dir = args.remap_dir
         save_dir = args.save_dir or './output_calibration_results'
         exact_projection = not (args.no_exact_projection or args.legacy)
@@ -197,10 +197,10 @@ def cmd_manual(args):
             sys.exit(1)
 
     # highlight_method 정규화
-    if highlight_method in ('ring', 'r'):
-        highlight_method = 'ring'
-    else:
+    if highlight_method in ('centroid', 'c'):
         highlight_method = 'centroid'
+    else:
+        highlight_method = 'ring'
 
     run_manual_calibration(
         image_pattern=image_pattern,
@@ -246,7 +246,7 @@ Examples:
                              help="Remap map directory path")
     auto_parser.add_argument("--highlight_method", type=str, default=None,
                              choices=['centroid', 'ring'],
-                             help="Highlight position method (default: centroid)")
+                             help="Highlight position method (default: ring)")
     auto_parser.add_argument("--save_dir", type=str, default=None,
                              help="Output directory for results")
     auto_parser.add_argument("--no_auto_radius", action="store_true",
@@ -279,7 +279,7 @@ Examples:
                                help="Auto-detect highlight region (default: manual)")
     manual_parser.add_argument("--highlight_method", type=str, default=None,
                                choices=['centroid', 'ring'],
-                               help="Highlight position method (default: centroid)")
+                               help="Highlight position method (default: ring)")
     manual_parser.add_argument("--remap_dir", type=str, default=None,
                                help="Remap map directory path (optional)")
     manual_parser.add_argument("--save_dir", type=str, default=None,

@@ -411,7 +411,7 @@ def run_auto_calibration(
     num_spheres_expected: int,
     remap_dir: str,
     save_base: str = './output_auto_calibration',
-    highlight_method: str = 'centroid',
+    highlight_method: str = 'ring',
     auto_radius: bool = True,
     exact_projection: bool = True,
     radius_estimator: str = 'robust',
@@ -433,7 +433,7 @@ def run_auto_calibration(
     save_base : str
         결과 저장 기본 디렉토리
     highlight_method : str
-        'centroid' 또는 'ring'
+        'ring' (기본) 또는 'centroid'
     radius_estimator : str
         'robust' (기본) 또는 'legacy'. legacy 는 개선 전 edge 탐색/타원 fit 으로,
         실측 기준 반경이 2.7~4.6 px 낮게 나온다. 비교용.

@@ -764,7 +764,7 @@ def run_manual_calibration(
     pixel_resolution: float,
     num_spheres: int = 1,
     auto_mode: bool = False,
-    highlight_method: str = 'centroid',
+    highlight_method: str = 'ring',
     remap_dir: str = None,
     save_base: str = './output_calibration_results',
     exact_projection: bool = True,
@@ -784,7 +784,7 @@ def run_manual_calibration(
     auto_mode : bool
         True이면 highlight 자동 검출, False이면 수동 선택
     highlight_method : str
-        'centroid' 또는 'ring'
+        'ring' (기본) 또는 'centroid'
     remap_dir : str or None
         Remap map 디렉토리 경로. None이면 rectification 미적용.
     save_base : str
