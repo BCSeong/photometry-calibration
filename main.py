@@ -82,10 +82,10 @@ def cmd_auto(args):
             None,
             "Sphere edge estimator? (Enter = robust, 'legacy' = pre-fix behaviour): ",
             default='robust')
-        triangulate = args.triangulate_source or _prompt_flag(
-            None,
-            "Locate the light source by intersecting rays from all spheres?\n"
-            "  (needs 3+ spheres, no extra input) (y/N): ", default=False)
+        triangulate = _prompt_flag(
+            not args.no_triangulate_source and not args.legacy,
+            "Refer the light vector to the FoV centre by intersecting the rays\n"
+            "  from all spheres? (needs 3+ spheres, no extra input) (Y/n): ")
     else:
         image_pattern = args.image_pattern
         sphere_diameter = args.sphere_diameter
@@ -97,7 +97,7 @@ def cmd_auto(args):
         auto_radius = not (args.no_auto_radius or args.legacy)
         exact_projection = not (args.no_exact_projection or args.legacy)
         radius_estimator = 'legacy' if (args.legacy_radius or args.legacy) else 'robust'
-        triangulate = bool(args.triangulate_source) and not args.legacy
+        triangulate = not (args.no_triangulate_source or args.legacy)
 
         # CLI 모드에서 필수 인자 검증
         missing = []
@@ -264,13 +264,15 @@ Examples:
     auto_parser.add_argument("--legacy_radius", action="store_true",
                              help="Use the pre-fix sphere edge estimator (nearest sampling, "
                                   "forward difference, fitEllipse). Reads ~3 px low")
-    auto_parser.add_argument("--triangulate_source", action="store_true",
-                             help="Intersect the rays from all spheres to locate the light "
-                                  "source, then report the direction at the FoV centre. Needs "
-                                  "3+ spheres and no extra input: the target supplies the baseline")
+    auto_parser.add_argument("--no_triangulate_source", action="store_true",
+                             help="Report the angle at the reflecting point on the sphere "
+                                  "instead of referring it to the FoV centre. Referring needs "
+                                  "3+ spheres and no extra input: the target supplies the "
+                                  "baseline, and the result is then comparable to the drawing")
     auto_parser.add_argument("--legacy", action="store_true",
                              help="Reproduce the original pipeline: implies --no_auto_radius "
-                                  "--no_exact_projection --legacy_radius")
+                                  "--no_exact_projection --legacy_radius "
+                                  "--no_triangulate_source")
     auto_parser.set_defaults(func=cmd_auto)
 
     # --- manual subcommand ---
