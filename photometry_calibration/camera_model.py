@@ -89,6 +89,37 @@ def sphere_centre_distance(radius_px: float, sphere_radius_mm: float,
     return sphere_radius_mm * np.sqrt((focal_px / radius_px) ** 2 + 1.0)
 
 
+def refer_to_fov_centre(
+    L: np.ndarray,
+    P: np.ndarray,
+    focal_plane_distance_mm: float,
+    led_distance_mm: float,
+) -> Optional[np.ndarray]:
+    """Same referral as triangulate_source, but told the source distance.
+
+    Diagnostic only -- the pipeline uses triangulate_source, which needs no
+    such input. Kept so a run can be audited against a distance taken from the
+    optical drawing: if the two disagree by more than a few tenths of a degree,
+    the triangulation is degraded (too few spheres, poor detection) or the
+    drawing value no longer matches the machine.
+
+    Walks back along L until the source is `led_distance_mm` from the FoV
+    centre, then reports the direction there.
+    """
+    O = np.array([0.0, 0.0, -float(focal_plane_distance_mm)])
+    w = P - O
+    b = float(np.dot(w, L))
+    disc = b * b - (float(np.dot(w, w)) - led_distance_mm ** 2)
+    if disc < 0.0:
+        return None
+    t = b + np.sqrt(disc)
+    if t <= 0.0:
+        return None
+    d = (P - t * L) - O
+    n = np.linalg.norm(d)
+    return None if n < 1e-9 else -d / n
+
+
 def triangulate_source(points, directions) -> Optional[np.ndarray]:
     """Where the light source sits, from several reflection points at once.
 
