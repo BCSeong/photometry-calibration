@@ -161,6 +161,8 @@ def compute_light_vector_from_highlight_position(
     camera: "camera_model.CameraModel" = None,
     sphere_centers: list = None,
     sphere_radius_mm: float = None,
+    led_distance_mm: float = None,
+    focal_plane_distance_mm: float = None,
 ):
     """
     여러 각도의 하이라이트 오프셋으로부터 조명 벡터 행렬 생성.
@@ -194,6 +196,11 @@ def compute_light_vector_from_highlight_position(
         exact model, which needs the field position to get the ray tilt right.
     sphere_radius_mm: float, optional
         physical sphere radius [mm]. Required for the exact model.
+    led_distance_mm, focal_plane_distance_mm: float, optional
+        When both are given (and the exact model is active), the light vector
+        is referred from the reflection point on the sphere to the FoV centre
+        on the focal plane. Needs the LED-to-specimen distance, an optical
+        hardware parameter; off unless explicitly requested.
 
     Output:
     ---------
@@ -204,6 +211,8 @@ def compute_light_vector_from_highlight_position(
 
     use_exact = (camera is not None and sphere_centers is not None
                  and sphere_radius_mm is not None)
+    use_ref = (use_exact and led_distance_mm is not None
+               and focal_plane_distance_mm is not None)
 
     # Viewing vector (orthographic path only)
     V = np.array([0.0, 0.0, 1.0]) # image to observer
@@ -217,11 +226,20 @@ def compute_light_vector_from_highlight_position(
 
             L = None
             if use_exact:
-                L = camera_model.compute_light_vector_exact(
-                    u, v, sphere_centers[sphere_idx], R, camera, sphere_radius_mm)
+                L, P = camera_model.compute_light_vector_exact(
+                    u, v, sphere_centers[sphere_idx], R, camera, sphere_radius_mm,
+                    return_point=True)
                 if L is None:
                     print(f"  [경고] sphere {sphere_idx}: 광선이 구를 빗나감, "
                           f"선형 배율 가정으로 대체")
+                elif use_ref:
+                    Lr = camera_model.refer_to_fov_centre(
+                        L, P, focal_plane_distance_mm, led_distance_mm)
+                    if Lr is None:
+                        print(f"  [경고] sphere {sphere_idx}: 기준점 보정 실패 "
+                              f"(조명 거리 {led_distance_mm} mm 가 기하와 맞지 않음)")
+                    else:
+                        L = Lr
 
             if L is None:
                 w = np.sqrt(max(R**2 - u**2 - v**2, 0.0))
@@ -584,6 +602,8 @@ def run_kycal_pipeline(
     camera: "camera_model.CameraModel" = None,
     sphere_centers: list = None,
     sphere_radius_mm: float = None,
+    led_distance_mm: float = None,
+    focal_plane_distance_mm: float = None,
 ) -> LightCalibrationResult:
     """KYCAL 파이프라인 오케스트레이터.
 
@@ -604,7 +624,9 @@ def run_kycal_pipeline(
     light_dir = compute_light_vector_from_highlight_position(
         highlight_position_list, sphere_radius_px,
         camera=camera, sphere_centers=sphere_centers,
-        sphere_radius_mm=sphere_radius_mm)
+        sphere_radius_mm=sphere_radius_mm,
+        led_distance_mm=led_distance_mm,
+        focal_plane_distance_mm=focal_plane_distance_mm)
     print(f"Light direction shape (before averaging): {light_dir.shape}")
 
     # Step: error

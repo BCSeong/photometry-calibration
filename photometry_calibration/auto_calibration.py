@@ -415,6 +415,7 @@ def run_auto_calibration(
     auto_radius: bool = True,
     exact_projection: bool = True,
     radius_estimator: str = 'robust',
+    led_distance_mm: float = None,
 ):
     """Auto calibration 파이프라인 실행.
 
@@ -442,6 +443,11 @@ def run_auto_calibration(
         sphere_diameter / pixel_resolution 으로 계산한 nominal 반경을 사용.
         초점면이 sphere 적도면에 있지 않으면 겉보기 반경이 nominal 과 달라지며,
         그 차이가 반사 법칙의 2배 증폭을 거쳐 elevation 오차가 된다.
+    led_distance_mm : float or None
+        주어지면 light vector 를 구 표면 정반사점 기준에서 초점면 FoV 중심
+        기준으로 옮긴다. FoV 중심에서 조명까지의 직선거리 [mm] 이며 광학계
+        도면에서 와야 하는 값이다. 파이프라인에 하드웨어 파라미터를 들이는
+        것이므로 기본값은 None (미적용) 이다.
     exact_projection : bool
         True (기본) 면 선형 배율 가정(구면 전체 동일 배율, V=(0,0,1)) 대신
         정확한 원근 투영 모델을 사용. remap_dir 의 카메라 캘리브레이션에서
@@ -456,6 +462,8 @@ def run_auto_calibration(
     print(f"Auto radius: {auto_radius}")
     print(f"Exact projection: {exact_projection}")
     print(f"Radius estimator: {radius_estimator}")
+    print(f"Reference-point correction: "
+          f"{'LED distance %.2f mm' % led_distance_mm if led_distance_mm else 'off'}")
 
     # Remap map 로드
     map_x, map_y = image_utils.load_map_pair(remap_dir)
@@ -578,6 +586,8 @@ def run_auto_calibration(
         camera=camera,
         sphere_centers=sphere_centers if camera else None,
         sphere_radius_mm=sphere_diameter / 2.0 if camera else None,
+        led_distance_mm=led_distance_mm if camera else None,
+        focal_plane_distance_mm=(camera.focal_px * pixel_resolution) if camera else None,
     )
 
     return result

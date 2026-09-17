@@ -82,6 +82,12 @@ def cmd_auto(args):
             None,
             "Sphere edge estimator? (Enter = robust, 'legacy' = pre-fix behaviour): ",
             default='robust')
+        led_distance = args.led_distance if args.led_distance is not None else _prompt_if_missing(
+            None,
+            "FoV centre to LED distance in mm, for the reference-point correction?\n"
+            "  (Enter = skip. This is an optical hardware parameter; prefer fixing\n"
+            "   the target so the sphere equator sits on the focal plane): ",
+            type_fn=float, default=None)
     else:
         image_pattern = args.image_pattern
         sphere_diameter = args.sphere_diameter
@@ -93,6 +99,7 @@ def cmd_auto(args):
         auto_radius = not (args.no_auto_radius or args.legacy)
         exact_projection = not (args.no_exact_projection or args.legacy)
         radius_estimator = 'legacy' if (args.legacy_radius or args.legacy) else 'robust'
+        led_distance = None if args.legacy else args.led_distance
 
         # CLI 모드에서 필수 인자 검증
         missing = []
@@ -128,6 +135,7 @@ def cmd_auto(args):
         auto_radius=auto_radius,
         exact_projection=exact_projection,
         radius_estimator=('legacy' if radius_estimator == 'legacy' else 'robust'),
+        led_distance_mm=led_distance,
     )
 
 
@@ -258,6 +266,13 @@ Examples:
     auto_parser.add_argument("--legacy_radius", action="store_true",
                              help="Use the pre-fix sphere edge estimator (nearest sampling, "
                                   "forward difference, fitEllipse). Reads ~3 px low")
+    auto_parser.add_argument("--led_distance", type=float, default=None,
+                             help="FoV centre to LED straight-line distance in mm. Enables the "
+                                  "reference-point correction, which moves the light vector from "
+                                  "the reflection point on the sphere to the FoV centre on the "
+                                  "focal plane. Off by default: it puts an optical hardware "
+                                  "parameter into the algorithm. Fixing the target and defining "
+                                  "the expected value offline achieves the same thing")
     auto_parser.add_argument("--legacy", action="store_true",
                              help="Reproduce the original pipeline: implies --no_auto_radius "
                                   "--no_exact_projection --legacy_radius")
