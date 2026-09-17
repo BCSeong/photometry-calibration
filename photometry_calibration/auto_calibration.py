@@ -415,7 +415,6 @@ def run_auto_calibration(
     auto_radius: bool = True,
     exact_projection: bool = True,
     radius_estimator: str = 'robust',
-    led_distance_mm: float = None,
     triangulate_source: bool = False,
 ):
     """Auto calibration 파이프라인 실행.
@@ -447,12 +446,6 @@ def run_auto_calibration(
     triangulate_source : bool
         True 면 sphere 들의 광선을 교차시켜 광원 위치를 구한 뒤 FoV 중심에서의
         방향을 보고한다. 추가 입력이 필요 없으나 sphere 3개 이상이 있어야 한다.
-        led_distance_mm 보다 우선한다.
-    led_distance_mm : float or None
-        주어지면 light vector 를 구 표면 정반사점 기준에서 초점면 FoV 중심
-        기준으로 옮긴다. FoV 중심에서 조명까지의 직선거리 [mm] 이며 광학계
-        도면에서 와야 하는 값이다. 파이프라인에 하드웨어 파라미터를 들이는
-        것이므로 기본값은 None (미적용) 이다.
     exact_projection : bool
         True (기본) 면 선형 배율 가정(구면 전체 동일 배율, V=(0,0,1)) 대신
         정확한 원근 투영 모델을 사용. remap_dir 의 카메라 캘리브레이션에서
@@ -467,13 +460,7 @@ def run_auto_calibration(
     print(f"Auto radius: {auto_radius}")
     print(f"Exact projection: {exact_projection}")
     print(f"Radius estimator: {radius_estimator}")
-    if triangulate_source:
-        ref_mode = 'triangulated source (no extra input)'
-    elif led_distance_mm:
-        ref_mode = 'LED distance %.2f mm' % led_distance_mm
-    else:
-        ref_mode = 'off'
-    print(f"Reference-point correction: {ref_mode}")
+    print(f"Light source triangulation: {'on' if triangulate_source else 'off'}")
 
     # Remap map 로드
     map_x, map_y = image_utils.load_map_pair(remap_dir)
@@ -596,7 +583,6 @@ def run_auto_calibration(
         camera=camera,
         sphere_centers=sphere_centers if camera else None,
         sphere_radius_mm=sphere_diameter / 2.0 if camera else None,
-        led_distance_mm=led_distance_mm if camera else None,
         triangulate_source=triangulate_source and camera is not None,
         focal_plane_distance_mm=(camera.focal_px * pixel_resolution) if camera else None,
     )

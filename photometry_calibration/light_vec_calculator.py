@@ -161,7 +161,6 @@ def compute_light_vector_from_highlight_position(
     camera: "camera_model.CameraModel" = None,
     sphere_centers: list = None,
     sphere_radius_mm: float = None,
-    led_distance_mm: float = None,
     focal_plane_distance_mm: float = None,
     triangulate_source: bool = False,
 ):
@@ -197,16 +196,16 @@ def compute_light_vector_from_highlight_position(
         exact model, which needs the field position to get the ray tilt right.
     sphere_radius_mm: float, optional
         physical sphere radius [mm]. Required for the exact model.
-    led_distance_mm, focal_plane_distance_mm: float, optional
-        When both are given (and the exact model is active), the light vector
-        is referred from the reflection point on the sphere to the FoV centre
-        on the focal plane. Needs the LED-to-specimen distance, an optical
-        hardware parameter; off unless explicitly requested.
+    focal_plane_distance_mm: float, optional
+        distance to the focal plane, f * pixel_resolution. Fixes where the FoV
+        centre sits in 3D, which triangulate_source reports the direction at.
     triangulate_source: bool
         Locate the light source by intersecting the rays from all spheres, then
-        report the direction it implies at the FoV centre. Needs three or more
-        spheres and no extra input, since the target supplies the baseline.
-        Takes precedence over led_distance_mm.
+        report the direction it implies at the FoV centre on the focal plane.
+        The reflection happens on the sphere surface rather than at the point
+        CAD measures from, and with a light this close the two see different
+        angles. Needs three or more spheres and no extra input, since the
+        target itself supplies the baseline.
 
     Output:
     ---------
@@ -220,8 +219,6 @@ def compute_light_vector_from_highlight_position(
     use_tri = (use_exact and triangulate_source
                and focal_plane_distance_mm is not None
                and len(highlight_position[0]) >= 3)
-    use_ref = (use_exact and not use_tri and led_distance_mm is not None
-               and focal_plane_distance_mm is not None)
     if triangulate_source and not use_tri:
         print("  [경고] 광원 삼각측량에는 정확 투영과 sphere 3개 이상이 필요합니다. 건너뜁니다.")
     origin = (np.array([0.0, 0.0, -float(focal_plane_distance_mm)])
@@ -246,14 +243,6 @@ def compute_light_vector_from_highlight_position(
                 if L is None:
                     print(f"  [경고] sphere {sphere_idx}: 광선이 구를 빗나감, "
                           f"선형 배율 가정으로 대체")
-                elif use_ref:
-                    Lr = camera_model.refer_to_fov_centre(
-                        L, P, focal_plane_distance_mm, led_distance_mm)
-                    if Lr is None:
-                        print(f"  [경고] sphere {sphere_idx}: 기준점 보정 실패 "
-                              f"(조명 거리 {led_distance_mm} mm 가 기하와 맞지 않음)")
-                    else:
-                        L = Lr
 
             if L is None:
                 w = np.sqrt(max(R**2 - u**2 - v**2, 0.0))
@@ -629,7 +618,6 @@ def run_kycal_pipeline(
     camera: "camera_model.CameraModel" = None,
     sphere_centers: list = None,
     sphere_radius_mm: float = None,
-    led_distance_mm: float = None,
     focal_plane_distance_mm: float = None,
     triangulate_source: bool = False,
 ) -> LightCalibrationResult:
@@ -653,7 +641,6 @@ def run_kycal_pipeline(
         highlight_position_list, sphere_radius_px,
         camera=camera, sphere_centers=sphere_centers,
         sphere_radius_mm=sphere_radius_mm,
-        led_distance_mm=led_distance_mm,
         focal_plane_distance_mm=focal_plane_distance_mm,
         triangulate_source=triangulate_source)
     print(f"Light direction shape (before averaging): {light_dir.shape}")

@@ -89,53 +89,6 @@ def sphere_centre_distance(radius_px: float, sphere_radius_mm: float,
     return sphere_radius_mm * np.sqrt((focal_px / radius_px) ** 2 + 1.0)
 
 
-def refer_to_fov_centre(
-    L: np.ndarray,
-    P: np.ndarray,
-    focal_plane_distance_mm: float,
-    led_distance_mm: float,
-) -> Optional[np.ndarray]:
-    """Move a light direction measured at P to the FoV centre on the focal plane.
-
-    The reflection happens on the sphere surface, not at the point the CAD
-    figure is drawn from.  With the equator on the focal plane the two differ
-    by about 0.6 deg; with the sphere bottom on it, 1.8 deg.  The gap scales as
-    Rs/D, so it is a property of sphere-based calibration rather than an error.
-
-    Needs the LED-to-specimen distance, which is an optical hardware parameter
-    with no other source in the pipeline. Prefer fixing the target and defining
-    the expected value offline; see the Confluence page. Off by default.
-
-    Parameters
-    ----------
-    L : light direction at P (source -> surface), unit
-    P : reflection point in camera coordinates [mm]
-    focal_plane_distance_mm : distance to the focal plane, f * pixel_resolution
-    led_distance_mm : straight-line FoV centre to LED distance [mm]
-
-    Returns
-    -------
-    light direction at the FoV centre, same convention, or None if the
-    LED cannot be placed at the given distance.
-    """
-    O = np.array([0.0, 0.0, -float(focal_plane_distance_mm)])
-    w = P - O
-    # LED sits at P - t*L with t > 0; require |LED - O| = led_distance
-    b = float(np.dot(w, L))
-    disc = b * b - (float(np.dot(w, w)) - led_distance_mm ** 2)
-    if disc < 0.0:
-        return None
-    t = b + np.sqrt(disc)
-    if t <= 0.0:
-        return None
-    led = P - t * L
-    d = led - O
-    n = np.linalg.norm(d)
-    if n < 1e-9:
-        return None
-    return -d / n
-
-
 def triangulate_source(points, directions) -> Optional[np.ndarray]:
     """Where the light source sits, from several reflection points at once.
 
@@ -223,7 +176,7 @@ def compute_light_vector_exact(
     sphere_radius_mm : physical sphere radius [mm]
 
     return_point : bool
-        also return the 3D reflection point, which refer_to_fov_centre needs
+        also return the 3D reflection point, which triangulate_source needs
 
     Returns
     -------
