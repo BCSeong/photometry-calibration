@@ -9,3 +9,5 @@ legacy*
 *.zip
 # analysis/report artefacts (figures, one-off scripts)
 report/
+# local virtual environment
+.venv/
