@@ -1,5 +1,253 @@
 # Photometry Calibration
 
+English · 한국어 (Korean version below)
+
+Sphere-based light direction calibration tool.
+Assuming an orthographic camera, it computes the **unit vector pointing from the light to the sphere surface** from the highlight position on a calibration sphere.
+
+## Requirements
+
+- **Python**: 3.9 or later
+- Dependencies: `pip install -r requirements.txt`
+
+## Setup and Run (Windows / Other PCs)
+
+So that another PC can run the tool with only this folder, we recommend creating a virtual environment (`.venv`) inside the folder.
+
+**1. Create the virtual environment (once)** — Python 3.9 or later required (tested with: Python 3.9.12)
+
+```bat
+cd photometry-calibration
+py -3.9 -m venv .venv
+.venv\Scripts\python.exe -m pip install --upgrade pip
+.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+**2. Run**
+
+- Double-click `run_photometry_calibration.bat`, or run it from a command prompt with arguments: `run_photometry_calibration.bat --image_pattern "..."`
+- If run without arguments, it asks for the required values interactively.
+- When finished, it shows the result code (exit code) and the window waits instead of closing.
+
+**Python used by `run_photometry_calibration.bat` (search order)**
+
+1. `.venv` in this folder (the environment created in step 1 above)
+2. `.venv39` in the parent folder (shared lota_tools environment, the previous method)
+3. `py -3` or `python` on PATH
+
+If none of the three is found, it prints how to create a virtual environment and exits.
+
+**Linux / macOS**: run directly instead of using the bat file.
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+python main.py auto --interactive
+```
+
+## Example Data
+
+The example inputs and outputs are large, so they are not included in git (only the latest set is shared). Get them from the shared folder and put them in this folder.
+
+| Folder | Contents |
+|---|---|
+| `examples/example_4mm_PROD_z10088_260915/` | Input example (forward LUT + LotaCalibrationResult.json, result report images) |
+| `output/output_4mm_260915_experiment/` | Output example for the input above (`*_cent`, `*_ring`: `ps_calib_L2SplitOnly_XYZ.json` + debug images) |
+
+- Shared folder: `<shared folder link — to be added>`
+
+## Project Structure
+
+```
+photometry-calibration/
+├── main.py                          # Entry point (auto/manual subcommands)
+├── photometry_calibration/          # Package
+│   ├── auto_calibration.py          # Auto mode: automatic sphere detection + highlight extraction
+│   ├── manual_calibration.py        # Manual mode: manual selection with matplotlib GUI
+│   ├── light_vec_calculator.py      # Core computation (light vector, coordinate transform)
+│   ├── image_utils.py               # Image I/O, remap/rectification
+│   ├── debug_image_extraction.py    # Debug visualization (extraction)
+│   └── debug_light_vectors.py       # Debug visualization (3D vectors)
+├── standalone_tools/                # Standalone utilities
+│   ├── remap_apply.py               # Batch remap tool
+│   └── test_photometry_verification.py
+├── requirements.txt
+└── README.md
+```
+
+## Quick Start (Auto Mode)
+
+Auto mode detects the spheres automatically from the image average, and extracts the highlight automatically from each light image.
+
+### Interactive Mode (Recommended)
+
+```bash
+python main.py auto --interactive
+```
+
+Enter the values when prompted:
+1. Image directory (e.g. `example_4mm`)
+2. Sphere diameter (mm, e.g. `4.0`)
+3. Pixel resolution (mm/px, e.g. `0.01`)
+4. Number of spheres (e.g. `7`)
+5. Highlight method (`centroid` or `ring`)
+6. Remap directory path (location of the rectification maps)
+7. Save directory
+
+### CLI Mode
+
+```bash
+python main.py auto \
+    --image_pattern example_4mm \
+    --sphere_diameter 4.0 \
+    --pixel_resolution 0.01 \
+    --num_spheres 7 \
+    --remap_dir ./remap \
+    --highlight_method centroid \
+    --save_dir ./output_auto_calibration
+```
+
+### Manual Mode
+
+Select the sphere centers and highlight regions manually in a matplotlib GUI.
+
+```bash
+python main.py manual --interactive
+```
+
+## Parameters
+
+| Parameter | Description | Example |
+|----------|------|------|
+| `image_pattern` | Image directory or glob pattern | `example_4mm`, `L2/*.bmp` |
+| `sphere_diameter` | Calibration sphere diameter (mm) | `4.0` |
+| `pixel_resolution` | Pixel resolution from camera calibration (mm/px) | `0.01` |
+| `num_spheres` | Number of spheres in the image | `7` |
+| `remap_dir` | Rectification remap map directory (`*map_x.tiff`, `*map_y.tiff`) | `./remap` |
+| `highlight_method` | Method to compute the highlight position: `centroid` or `ring` | `centroid` |
+
+### Highlight Method
+
+- **centroid** (default): center of mass (mean) of the highlight pixels. Suited to circular highlights.
+- **ring**: polar decomposition — median(radial distance) + circular mean(angle). Keeps the true radial distance for arc-shaped highlights.
+
+## Calibration Pipeline
+
+```
+Load images → Rectification → Image averaging → Sphere detection → Highlight extraction
+    → Compute highlight (u,v) offset → Compute light vector by law of reflection (uvw)
+    → uvw→XYZ coordinate transform → XYZ_backward transform → Spherical coordinate transform → Save JSON
+```
+
+### Core: Light Vector Calculation (Law of Reflection)
+
+Under the orthographic camera assumption, the highlight on the sphere surface is formed by the law of reflection.
+
+1. Compute the sphere surface normal at the highlight position `(u, v)`:
+   ```
+   N = (u/R, v/R, w/R),  w = sqrt(R^2 - u^2 - v^2)
+   ```
+2. Viewing vector `V = (0, 0, 1)` (camera direction)
+3. Compute the light vector by the law of reflection:
+   ```
+   L = V - 2(N·V)N
+   ```
+
+**The output `L` is the unit vector pointing from the light to the sphere surface.**
+
+## Coordinate System Conventions
+
+### 1. Image Coordinate System (UVW) — For Internal Computation
+
+```
+        u (+)
+        ───→  (East, image width direction)
+        |
+    v (+) ↓   (South, image height direction)
+
+    w = u × v  (right-hand rule, points from camera to object)
+```
+
+- `u`: right (→, East, direction of increasing image width)
+- `v`: down (↓, South, direction of increasing image height)
+- `w`: `u × v` (camera-to-object direction, out of image plane)
+
+### 2. XYZ Coordinate System — Output Coordinate System (forward)
+
+Transformation matrix from UVW to XYZ:
+
+```
+[X]   [0   1   0] [u]
+[Y] = [1   0   0] [v]
+[Z]   [0   0  -1] [w]
+```
+
+- `X = v` : image height direction (down is +)
+- `Y = u` : image width direction (right is +)
+- `Z = -w` : determined by `X × Y` (object-to-camera direction)
+
+### 3. XYZ_backward Coordinate System — Reverse-Direction Output
+
+```
+X_backward = -X
+Y_backward = -Y
+Z_backward =  Z  (unchanged)
+```
+
+Reverses the direction in the XY plane.
+
+### 4. Spherical Coordinate System
+
+Converts the XYZ vector to elevation/azimuth:
+
+- **elevation**: angle rising from the horizontal plane (XY) toward the Z axis (`arcsin(Z/r)`, -90~90 deg)
+- **azimuth**: angle in the XY plane (`atan2(Y, X)`, 0~360 deg)
+
+```
+r = sqrt(X^2 + Y^2 + Z^2)
+elevation = arcsin(Z / r)
+azimuth   = atan2(Y, X)        (converted to 0~360 deg)
+```
+
+## Output Files
+
+Results are saved in the `{save_dir}/YYYYMMDD_HHMMSS/` directory:
+
+| File | Description |
+|------|------|
+| `ps_calib_L2SplitOnly_XYZ.json` | Calibration result (JSON) |
+| `debug_vector.png_*.png` | 3D visualization of light vectors (front/top/side/perspective) |
+| `debug_extraction.png` | Visualization of sphere/highlight extraction results |
+| `debug_blob_detection.png` | Sphere detection result (auto mode) |
+
+### JSON Structure
+
+```json
+{
+  "forward": {
+    "light_dir": [[X, Y, Z], ...],
+    "light_dir_spherical_coord": [
+      {"elevation_deg": 45.0, "azimuth_deg": 120.0}, ...
+    ]
+  },
+  "backward": {
+    "light_dir": [[-X, -Y, Z], ...],
+    "light_dir_spherical_coord": [...]
+  },
+  "errors": [[ex, ey, ez], ...],
+  "version": "0.0.0-1"
+}
+```
+
+- `forward.light_dir`: **unit vector pointing from the light to the sphere** (XYZ coordinate system, shape: num_lights x 3)
+- `forward.light_dir_spherical_coord`: spherical coordinate representation of the same vector
+- `backward`: vector in the XY-reversed coordinate system
+- `errors`: RMSE error between multiple spheres (normal if below 0.1)
+
+---
+
+# 한국어
+
 Sphere 기반 조명 방향 캘리브레이션 도구.
 Orthographic camera 가정 하에 calibration sphere의 highlight 위치로부터 **조명에서 sphere 표면으로 향하는 단위 벡터**를 산출합니다.
 
