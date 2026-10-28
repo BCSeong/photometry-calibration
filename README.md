@@ -43,6 +43,17 @@ pip install -r requirements.txt
 python main.py auto --interactive
 ```
 
+## 예제 데이터
+
+예제 입력·출력은 용량이 커서 git에 포함하지 않습니다(최신 1세트만 공유). 공유 폴더에서 받아 이 폴더에 둡니다.
+
+| 폴더 | 내용 |
+|---|---|
+| `examples/example_4mm_PROD_z10088_260915/` | 입력 예제 (forward LUT + LotaCalibrationResult.json, 결과 리포트 이미지) |
+| `output/output_4mm_260915_experiment/` | 위 입력의 출력 예제 (`*_cent`, `*_ring`: `ps_calib_L2SplitOnly_XYZ.json` + debug 이미지) |
+
+- 공유 폴더: `<공유 폴더 링크 — 추가 예정>`
+
 ## 프로젝트 구조
 
 ```
